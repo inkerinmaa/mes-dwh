@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS orders (
     planned_complete_at  TIMESTAMPTZ,
     start_at             TIMESTAMPTZ,
     complete_at          TIMESTAMPTZ,
+    seq_order            INTEGER,
     comment              TEXT,
     cage               BOOLEAN      NOT NULL DEFAULT false,
     cage_size          INTEGER      NOT NULL DEFAULT 50,
@@ -99,6 +100,25 @@ CREATE TABLE IF NOT EXISTS cages (
     completed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     completed_by_id  INTEGER REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS production_events (
+    id               SERIAL PRIMARY KEY,
+    line_id          INTEGER NOT NULL REFERENCES production_lines(id),
+    order_id         INTEGER REFERENCES orders(id),
+    machine_state_id INTEGER REFERENCES machine_states(id),
+    event_type       VARCHAR(50) NOT NULL
+                     CHECK (event_type IN ('downtime_unplanned','downtime_planned','changeover','quality_hold','maintenance','operator_note','safety')),
+    severity         VARCHAR(20) NOT NULL DEFAULT 'info'
+                     CHECK (severity IN ('info','warning','critical')),
+    title            VARCHAR(200) NOT NULL,
+    description      TEXT,
+    start_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    end_at           TIMESTAMPTZ,
+    created_by_id    INTEGER REFERENCES users(id),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS production_events_line_idx  ON production_events(line_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS production_events_state_idx ON production_events(machine_state_id) WHERE machine_state_id IS NOT NULL;
 
 -- Per-user notification preferences (which log types appear in the Alerts panel)
 CREATE TABLE IF NOT EXISTS user_notification_prefs (
