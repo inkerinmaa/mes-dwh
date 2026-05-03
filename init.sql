@@ -1,5 +1,10 @@
--- MES database schema
--- Run once to bootstrap: psql -h localhost -U nik -d mydb -f init.sql
+-- MES database schema — DDL only
+-- Apply once after `docker compose up -d`:
+--   docker exec -i postgres-db psql -U nik -d mydb < ~/projects/dwh/init.sql
+-- Then load test data:
+--   docker exec -i postgres-db psql -U nik -d mydb < ~/projects/dwh/seed.sql
+
+-- ── Core ──────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS users (
     id                 SERIAL PRIMARY KEY,
@@ -44,6 +49,8 @@ CREATE TABLE IF NOT EXISTS materials (
     stock_quantity DECIMAL(10, 3) DEFAULT 0
 );
 
+-- ── Orders ────────────────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS orders (
     id                 SERIAL PRIMARY KEY,
     order_number       VARCHAR(100) UNIQUE NOT NULL,
@@ -53,14 +60,14 @@ CREATE TABLE IF NOT EXISTS orders (
     uom_id             INTEGER REFERENCES uom(id),
     status             VARCHAR(50)  NOT NULL DEFAULT 'created'
                            CHECK (status IN ('created','running','paused','completed','cancelled')),
-    priority             VARCHAR(50)  DEFAULT 'Medium',
-    due_date             DATE,
-    planned_start_at     TIMESTAMPTZ,
-    planned_complete_at  TIMESTAMPTZ,
-    start_at             TIMESTAMPTZ,
-    complete_at          TIMESTAMPTZ,
-    seq_order            INTEGER,
-    comment              TEXT,
+    priority           VARCHAR(50)  DEFAULT 'Medium',
+    due_date           DATE,
+    planned_start_at   TIMESTAMPTZ,
+    planned_complete_at TIMESTAMPTZ,
+    start_at           TIMESTAMPTZ,
+    complete_at        TIMESTAMPTZ,
+    seq_order          INTEGER,
+    comment            TEXT,
     cage               BOOLEAN      NOT NULL DEFAULT false,
     cage_size          INTEGER      NOT NULL DEFAULT 50,
     produced_volume    DECIMAL(12, 3) NOT NULL DEFAULT 0,
@@ -69,6 +76,18 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at         TIMESTAMPTZ  DEFAULT NOW(),
     updated_at         TIMESTAMPTZ  DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS cages (
+    id               SERIAL PRIMARY KEY,
+    order_number     VARCHAR(100) NOT NULL REFERENCES orders(order_number) ON DELETE CASCADE,
+    cage_guid        UUID         NOT NULL DEFAULT gen_random_uuid(),
+    cage_size        INTEGER      NOT NULL DEFAULT 50,
+    packages         INTEGER      NOT NULL,
+    completed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    completed_by_id  INTEGER REFERENCES users(id)
+);
+
+-- ── Logging & telemetry ───────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS logs (
     id      SERIAL PRIMARY KEY,
@@ -82,7 +101,7 @@ CREATE INDEX IF NOT EXISTS logs_type_idx  ON logs(type);
 CREATE INDEX IF NOT EXISTS logs_level_idx ON logs(level);
 
 -- Each row is a state-change event. Duration is computed dynamically as
--- LEAD(ts) OVER (...) - ts, or NOW() - ts for the still-active segment.
+-- LEAD(ts) OVER (...) - ts, or NOW() - ts for the active segment.
 CREATE TABLE IF NOT EXISTS machine_states (
     id                 SERIAL PRIMARY KEY,
     production_line_id INTEGER NOT NULL REFERENCES production_lines(id),
@@ -91,23 +110,14 @@ CREATE TABLE IF NOT EXISTS machine_states (
 );
 CREATE INDEX IF NOT EXISTS machine_states_line_ts_idx ON machine_states(production_line_id, ts DESC);
 
-CREATE TABLE IF NOT EXISTS cages (
-    id               SERIAL PRIMARY KEY,
-    order_number     VARCHAR(100) NOT NULL REFERENCES orders(order_number) ON DELETE CASCADE,
-    cage_guid        UUID         NOT NULL DEFAULT gen_random_uuid(),
-    cage_size        INTEGER      NOT NULL DEFAULT 50,
-    packages         INTEGER      NOT NULL,
-    completed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    completed_by_id  INTEGER REFERENCES users(id)
-);
-
 CREATE TABLE IF NOT EXISTS production_events (
     id               SERIAL PRIMARY KEY,
     line_id          INTEGER NOT NULL REFERENCES production_lines(id),
     order_id         INTEGER REFERENCES orders(id),
     machine_state_id INTEGER REFERENCES machine_states(id),
     event_type       VARCHAR(50) NOT NULL
-                     CHECK (event_type IN ('downtime_unplanned','downtime_planned','changeover','quality_hold','maintenance','operator_note','safety')),
+                     CHECK (event_type IN ('downtime_unplanned','downtime_planned','changeover',
+                                           'quality_hold','maintenance','operator_note','safety')),
     severity         VARCHAR(20) NOT NULL DEFAULT 'info'
                      CHECK (severity IN ('info','warning','critical')),
     title            VARCHAR(200) NOT NULL,
@@ -118,9 +128,11 @@ CREATE TABLE IF NOT EXISTS production_events (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS production_events_line_idx  ON production_events(line_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS production_events_state_idx ON production_events(machine_state_id) WHERE machine_state_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS production_events_state_idx ON production_events(machine_state_id)
+    WHERE machine_state_id IS NOT NULL;
 
--- Per-user notification preferences (which log types appear in the Alerts panel)
+-- ── Users & notifications ─────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS user_notification_prefs (
     user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     log_type VARCHAR(20) NOT NULL
@@ -129,7 +141,8 @@ CREATE TABLE IF NOT EXISTS user_notification_prefs (
     PRIMARY KEY (user_id, log_type)
 );
 
--- Application settings (key-value store with change history)
+-- ── Settings ──────────────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS settings (
     key            VARCHAR(100) PRIMARY KEY,
     value          TEXT         NOT NULL,
@@ -138,88 +151,131 @@ CREATE TABLE IF NOT EXISTS settings (
     changed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO settings (key, value) VALUES
-    ('timeline_auto_refresh_enabled',     'true'),
-    ('timeline_refresh_interval_seconds', '60')
-ON CONFLICT (key) DO NOTHING;
+-- ── Master Data ───────────────────────────────────────────────────────────────
 
--- Seed: UOMs
-INSERT INTO uom (code, name, type) VALUES
-    ('kg',  'Kilogram',      'weight'),
-    ('t',   'Tonne',         'weight'),
-    ('g',   'Gram',          'weight'),
-    ('pkg', 'Packages',       'count'),
-    ('m',   'Meter',         'length'),
-    ('m2',  'Square Meter',  'area'),
-    ('m3',  'Cubic Meter',   'volume'),
-    ('L',   'Liter',         'volume')
-ON CONFLICT (code) DO NOTHING;
+CREATE TABLE IF NOT EXISTS products (
+    id              SERIAL PRIMARY KEY,
+    number          VARCHAR(50)   NOT NULL UNIQUE,
+    description     TEXT,
+    sku             VARCHAR(50),
+    code            VARCHAR(50),
+    package_code    VARCHAR(50),
+    initial_code    VARCHAR(50),
+    instruction     TEXT,
+    length          NUMERIC(10,3),
+    width           NUMERIC(10,3),
+    thickness       NUMERIC(10,3),
+    density         NUMERIC(10,3),
+    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    modified_at     TIMESTAMPTZ,
+    modified_by     INTEGER REFERENCES users(id)
+);
 
--- Seed: SKUs
-INSERT INTO skus (code, name, description, unit) VALUES
-    ('SKU-A100', 'Product Alpha 100',   'Standard alpha product, 100g variant', 'packages'),
-    ('SKU-A200', 'Product Alpha 200',   'Standard alpha product, 200g variant', 'packages'),
-    ('SKU-B150', 'Product Beta 150',    'Beta product line, 150g variant',      'packages'),
-    ('SKU-B300', 'Product Beta 300',    'Beta product line, 300g variant',      'packages'),
-    ('SKU-C400', 'Product Charlie 400', 'Charlie product, 400g variant',        'packages'),
-    ('SKU-C500', 'Product Charlie 500', 'Charlie product, 500g variant',        'packages'),
-    ('SKU-D100', 'Product Delta 100',   'Delta product line, 100g variant',     'packages'),
-    ('SKU-D250', 'Product Delta 250',   'Delta product line, 250g variant',     'packages'),
-    ('SKU-E350', 'Product Echo 350',    'Echo product, 350g variant',           'packages'),
-    ('SKU-E500', 'Product Echo 500',    'Echo product, 500g variant',           'packages')
-ON CONFLICT (code) DO NOTHING;
+CREATE TABLE IF NOT EXISTS general_sp (
+    id                      SERIAL PRIMARY KEY,
+    product_id              INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+    package                 VARCHAR(50),
+    abc_cat                 VARCHAR(10),
+    waste_suply             NUMERIC(10,3),
+    remark                  TEXT,
+    info                    TEXT,
+    labelling               VARCHAR(100),
+    state                   VARCHAR(50),
+    data_check              BOOLEAN,
+    drum_pressure           NUMERIC(10,3),
+    saw_cross               NUMERIC(10,3),
+    labelling_state         VARCHAR(50),
+    product_type            VARCHAR(50),
+    split_in_pair_113_114   BOOLEAN,
+    product_turn_pos_122    VARCHAR(50),
+    weight_limit_max_perc   NUMERIC(10,3),
+    weight_limit_min_perc   NUMERIC(10,3),
+    flexi_turn              BOOLEAN,
+    flexi_width             NUMERIC(10,3),
+    energy_class            VARCHAR(20),
+    binder_type             VARCHAR(50),
+    pkf_group               VARCHAR(50),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at             TIMESTAMPTZ,
+    modified_by             INTEGER REFERENCES users(id)
+);
 
--- Seed: production lines
-INSERT INTO production_lines (id, name, description, status) VALUES
-    (1, 'Wired Matts', 'Primary production line',   'active'),
-    (2, 'Line 2', 'Secondary production line', 'active'),
-    (3, 'Line 3', 'Packaging line',            'active')
-ON CONFLICT (id) DO NOTHING;
+CREATE TABLE IF NOT EXISTS saws_sp (
+    id                  SERIAL PRIMARY KEY,
+    product_id          INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+    trimming_waste_ows  NUMERIC(10,3),
+    plates_in_pkg       INTEGER,
+    cut_direction       VARCHAR(50),
+    layers              INTEGER,
+    waste_std           NUMERIC(10,3),
+    trimming_waste_ow   NUMERIC(10,3),
+    sheet_width         NUMERIC(10,3),
+    cut_width           NUMERIC(10,3),
+    raw_edge_width      NUMERIC(10,3),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at         TIMESTAMPTZ,
+    modified_by         INTEGER REFERENCES users(id)
+);
 
--- Seed: raw materials
-INSERT INTO materials (code, name, unit, stock_quantity) VALUES
-    ('MAT-001', 'Raw Material A', 'kg',   5000),
-    ('MAT-002', 'Raw Material B', 'kg',   3200),
-    ('MAT-003', 'Packaging Film', 'm2',  12000),
-    ('MAT-004', 'Cardboard Box',  'pcs',  8500),
-    ('MAT-005', 'Label Sheet',    'pcs', 25000)
-ON CONFLICT (code) DO NOTHING;
+CREATE TABLE IF NOT EXISTS tahu_sp (
+    id                      SERIAL PRIMARY KEY,
+    product_id              INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+    tahu_finish_pack_height NUMERIC(10,3),
+    tahu_output_height      NUMERIC(10,3),
+    tahu_side_welding       NUMERIC(10,3),
+    tahu_film_width         NUMERIC(10,3),
+    tahu_vacuum             NUMERIC(10,3),
+    tahu_use_shrink_heat    BOOLEAN,
+    tahu_smart_date         BOOLEAN,
+    tahu_foil_code          VARCHAR(50),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at             TIMESTAMPTZ,
+    modified_by             INTEGER REFERENCES users(id)
+);
 
--- Seed: machine state events (one row per state-change; duration computed dynamically)
--- Guard: only insert when the table is empty so re-running init.sql is safe
-INSERT INTO machine_states (production_line_id, state, ts)
-SELECT v.line_id, v.state, NOW() + v.offset_interval
-FROM (VALUES
-    -- Line 1 (Primary — ~87% running)
-    (1, 'running',  INTERVAL '-480 minutes'),
-    (1, 'running',  INTERVAL '-410 minutes'),
-    (1, 'warning',  INTERVAL '-355 minutes'),
-    (1, 'running',  INTERVAL '-340 minutes'),
-    (1, 'warning',  INTERVAL '-260 minutes'),
-    (1, 'running',  INTERVAL '-250 minutes'),
-    (1, 'stopped',  INTERVAL '-185 minutes'),
-    (1, 'running',  INTERVAL '-173 minutes'),
-    (1, 'warning',  INTERVAL  '-83 minutes'),
-    (1, 'running',  INTERVAL  '-63 minutes'),
-    -- Line 2 (Secondary — ~78% running)
-    (2, 'running',  INTERVAL '-480 minutes'),
-    (2, 'warning',  INTERVAL '-420 minutes'),
-    (2, 'running',  INTERVAL '-395 minutes'),
-    (2, 'stopped',  INTERVAL '-325 minutes'),
-    (2, 'running',  INTERVAL '-310 minutes'),
-    (2, 'running',  INTERVAL '-255 minutes'),
-    (2, 'warning',  INTERVAL '-215 minutes'),
-    (2, 'running',  INTERVAL '-195 minutes'),
-    (2, 'stopped',  INTERVAL '-115 minutes'),
-    (2, 'running',  INTERVAL '-105 minutes'),
-    -- Wired Matts (Packaging — ~92% running)
-    (3, 'running',  INTERVAL '-480 minutes'),
-    (3, 'running',  INTERVAL '-390 minutes'),
-    (3, 'warning',  INTERVAL '-315 minutes'),
-    (3, 'running',  INTERVAL '-303 minutes'),
-    (3, 'running',  INTERVAL '-218 minutes'),
-    (3, 'stopped',  INTERVAL '-148 minutes'),
-    (3, 'running',  INTERVAL '-140 minutes'),
-    (3, 'running',  INTERVAL  '-60 minutes')
-) AS v(line_id, state, offset_interval)
-WHERE NOT EXISTS (SELECT 1 FROM machine_states LIMIT 1);
+CREATE TABLE IF NOT EXISTS bundler_sp (
+    id                       SERIAL PRIMARY KEY,
+    product_id               INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+    bundler_packs_per_bundle INTEGER,
+    bundler_comp_length      NUMERIC(10,3),
+    bundler_output_length    NUMERIC(10,3),
+    product_turn_pos_608     VARCHAR(50),
+    group_product_pos_608    VARCHAR(50),
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at              TIMESTAMPTZ,
+    modified_by              INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS consumables_sp (
+    id                   SERIAL PRIMARY KEY,
+    product_id           INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+    bundle_plastic_code  VARCHAR(50),
+    hooder_plastic_code  VARCHAR(50),
+    wrapper_plastic_code VARCHAR(50),
+    check_layers         INTEGER,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at          TIMESTAMPTZ,
+    modified_by          INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS ul_sp (
+    id                          SERIAL PRIMARY KEY,
+    product_id                  INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+    ul_product_per_layer        INTEGER,
+    ul_pallet_layers            INTEGER,
+    ul_layers_interlocked       BOOLEAN,
+    ul_pack_orientation         VARCHAR(50),
+    ul_direction_base_layer     VARCHAR(50),
+    ul_miwo_feet                INTEGER,
+    ul_miwo_dim                 VARCHAR(50),
+    ul_pallet_dim               VARCHAR(50),
+    ul_pallet_dim_perpendicular VARCHAR(50),
+    ul_pallet_height            NUMERIC(10,3),
+    ul_cross_turning            BOOLEAN,
+    ul_use_hooding              BOOLEAN,
+    ul_use_glue                 BOOLEAN,
+    ul_use_wrapping             BOOLEAN,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    modified_at                 TIMESTAMPTZ,
+    modified_by                 INTEGER REFERENCES users(id)
+);

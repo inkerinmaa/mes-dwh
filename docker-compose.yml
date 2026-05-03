@@ -40,7 +40,50 @@ services:
     depends_on:
       - postgres
 
+  # ── CloudBeaver ───────────────────────────────────────────────────────────────
+  # Web-based database tool — connects to both PostgreSQL and ClickHouse.
+  # Open http://localhost:8978 and create connections on first launch.
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:latest
+    container_name: cloudbeaver
+    ports:
+      - "8978:8978"
+    volumes:
+      - cloudbeaver_data:/opt/cloudbeaver/workspace
+    restart: unless-stopped
+
+  # ── NATS JetStream ────────────────────────────────────────────────────────────
+  # Message broker with persistence for line state events.
+  # Subjects: lines.<id>.state  payload: {"lineId":1,"state":"running"}
+  # JetStream stream: MES_LINES, retention: limits, storage: file
+  nats:
+    image: nats:2.10-alpine
+    container_name: nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # HTTP monitoring API
+    volumes:
+      - nats_data:/data
+    restart: unless-stopped
+
+  # ── NATS UI (NUI) ─────────────────────────────────────────────────────────────
+  # Web UI for browsing NATS subjects, streams, and messages.
+  # Open http://localhost:31311
+  nui:
+    image: ghcr.io/nats-nui/nui:latest
+    container_name: nats-nui
+    ports:
+      - "31311:31311"
+    environment:
+      - NUI_NATS_URL=nats://nats:4222
+    restart: unless-stopped
+    depends_on:
+      - nats
+
 volumes:
   postgres_data:
   clickhouse_data:
   pgadmin_data:
+  cloudbeaver_data:
+  nats_data:
