@@ -1,0 +1,102 @@
+services:
+    postgres:
+        image: postgres:18
+        container_name: postgres-db
+        environment:
+            POSTGRES_USER: mesrwl
+            POSTGRES_PASSWORD: HzG03x45efVB3jAwg3kSOI88KdA9QNAa
+            POSTGRES_DB: mes
+        ports:
+            - "5432:5432"
+        volumes:
+            - postgres_data:/var/lib/postgresql
+        networks:
+            - default
+            - mes-net
+        restart: unless-stopped
+
+    clickhouse:
+        image: clickhouse/clickhouse-server:25.9.7
+        container_name: clickhouse-db
+        environment:
+            CLICKHOUSE_USER: nik
+            CLICKHOUSE_PASSWORD: mysecretpassword
+            CLICKHOUSE_DEFAULT_DATABASE: mydb
+        ports:
+            - "8123:8123" # HTTP interface
+            - "9000:9000" # Native TCP interface
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse
+        networks:
+            - default
+            - mes-net
+        restart: unless-stopped
+
+    pgadmin:
+        image: dpage/pgadmin4:8
+        container_name: pgadmin
+        environment:
+            PGADMIN_DEFAULT_EMAIL: mes@local.dev
+            PGADMIN_DEFAULT_PASSWORD: admin
+        ports:
+            - "5050:80"
+        volumes:
+            - pgadmin_data:/var/lib/pgadmin
+        restart: unless-stopped
+        depends_on:
+            - postgres
+
+    # ── CloudBeaver ───────────────────────────────────────────────────────────────
+    # Web-based database tool — connects to both PostgreSQL and ClickHouse.
+    # Open http://localhost:8978 and create connections on first launch.
+    cloudbeaver:
+        image: dbeaver/cloudbeaver:latest
+        container_name: cloudbeaver
+        ports:
+            - "8978:8978"
+        volumes:
+            - cloudbeaver_data:/opt/cloudbeaver/workspace
+        restart: unless-stopped
+
+    # ── NATS JetStream ────────────────────────────────────────────────────────────
+    # Message broker with persistence for line state events.
+    # Subjects: lines.<id>.state  payload: {"lineId":1,"state":"running"}
+    # JetStream stream: MES_LINES, retention: limits, storage: file
+    nats:
+        image: nats:2.10-alpine
+        container_name: nats
+        command: ["-js", "-m", "8222"]
+        ports:
+            - "4222:4222" # client connections
+            - "8222:8222" # HTTP monitoring API
+        volumes:
+            - nats_data:/data
+        networks:
+            - default
+            - mes-net
+        restart: unless-stopped
+
+    # ── NATS UI (NUI) ─────────────────────────────────────────────────────────────
+    # Web UI for browsing NATS subjects, streams, and messages.
+    # Open http://localhost:31311
+    nui:
+        image: ghcr.io/nats-nui/nui:latest
+        container_name: nats-nui
+        ports:
+            - "31311:31311"
+        environment:
+            - NUI_NATS_URL=nats://nats:4222
+        restart: unless-stopped
+        depends_on:
+            - nats
+
+volumes:
+    postgres_data:
+    clickhouse_data:
+    pgadmin_data:
+    cloudbeaver_data:
+    nats_data:
+
+networks:
+    mes-net:
+        external: true
