@@ -25,12 +25,19 @@ INSERT INTO uom (code, name, name_eng, type) VALUES
     ('m3',  'Кубический метр',  'Cubic meter', 'volume')
 ON CONFLICT (code) DO NOTHING;
 
--- ── SKUs ──────────────────────────────────────────────────────────────────────
+-- ── Shifts ────────────────────────────────────────────────────────────────────
 
-INSERT INTO skus (code, name, name_eng, description, unit, length, width, thickness, density, pcs_in_pack, packs_on_pallet) VALUES
-    ('216094', 'ВАЙРЕД МАТ', 'Wired Matt 105 КФ1 7000х1000х25',       'ВАЙРЕД МАТ 105 КФ1 7000х1000х25',      'packages', 7000, 1000, 25, 105, NULL, NULL),
-    ('216095', 'ВАЙРЕД МАТ', 'Wired Matt 100 КФ1 7000х1000х25',       'ВАЙРЕД МАТ 100 КФ1 7000х1000х25',      'packages', 7000, 1000, 25, 105, NULL, NULL)
+INSERT INTO shifts (code, name, color, sort_order) VALUES
+    ('A', 'Shift A', '#3b82f6', 0),
+    ('B', 'Shift B', '#10b981', 1),
+    ('C', 'Shift C', '#f59e0b', 2),
+    ('D', 'Shift D', '#ef4444', 3)
 ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO shift_schedule (id, pattern, start_time, reference_date, reference_shift_id)
+SELECT 1, '4on4off', '08:00:00'::time, CURRENT_DATE, s.id
+FROM shifts s WHERE s.code = 'A'
+ON CONFLICT (id) DO NOTHING;
 
 -- ── Production lines ──────────────────────────────────────────────────────────
 
@@ -126,15 +133,35 @@ FROM (VALUES
 ) AS v(line_id, state, offset_interval)
 WHERE NOT EXISTS (SELECT 1 FROM machine_states LIMIT 1);
 
--- ── Products ──────────────────────────────────────────────────────────────────
+-- ── Products (unified: manufacturing recipes + SAP ordering codes) ───────────
 
-INSERT INTO products (number, description, description_eng, sku, code, package_code, initial_code, instruction,
-                      length, width, thickness, density)
+INSERT INTO products (number, name, name_eng, description, description_eng,
+                      sku, code, package_code, initial_code, instruction,
+                      unit, length, width, thickness, density)
 VALUES
-    ('WM-105', 'ВАЙРЕД МАТ 105 КФ1 7000х1000х25', 'WIRED MAT 105 KF1 7000x1000x25', 'WM-105', 'WM-105',  'PAK-SL-105',  'IA105',
-     '',1000, 7000, 25, 105),
-     ('WM-100', 'ВАЙРЕД МАТ 100 КФ1 7000х1000х25', 'WIRED MAT 100 KF1 7000x1000x25', 'WM-100', 'WM-100',  'PAK-SL-100',  'IA100',
-      '',1000, 7000, 25, 100)
+    ('WM-105', 'ВАЙРЕД МАТ 105', 'Wired Mat 105',
+     'ВАЙРЕД МАТ 105 КФ1 7000х1000х25', 'WIRED MAT 105 KF1 7000x1000x25',
+     'WM-105', 'WM-105', 'PAK-SL-105', 'IA105', '',
+     'packages', 1000, 7000, 25, 105),
+    ('WM-100', 'ВАЙРЕД МАТ 100', 'Wired Mat 100',
+     'ВАЙРЕД МАТ 100 КФ1 7000х1000х25', 'WIRED MAT 100 KF1 7000x1000x25',
+     'WM-100', 'WM-100', 'PAK-SL-100', 'IA100', '',
+     'packages', 1000, 7000, 25, 100)
+ON CONFLICT (number) DO UPDATE SET
+    name    = EXCLUDED.name,
+    name_eng = EXCLUDED.name_eng,
+    unit    = EXCLUDED.unit;
+
+-- SAP ordering codes (used in production-plan CSV imports)
+INSERT INTO products (number, name, name_eng, description, description_eng,
+                      unit, length, width, thickness, density)
+VALUES
+    ('216094', 'ВАЙРЕД МАТ', 'Wired Matt 105',
+     'ВАЙРЕД МАТ 105 КФ1 7000х1000х25', 'ВАЙРЕД МАТ 105 КФ1 7000х1000х25',
+     'packages', 7000, 1000, 25, 105),
+    ('216095', 'ВАЙРЕД МАТ', 'Wired Matt 100',
+     'ВАЙРЕД МАТ 100 КФ1 7000х1000х25', 'ВАЙРЕД МАТ 100 КФ1 7000х1000х25',
+     'packages', 7000, 1000, 25, 100)
 ON CONFLICT (number) DO NOTHING;
 
 -- ── General setpoints ─────────────────────────────────────────────────────────

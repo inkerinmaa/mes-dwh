@@ -3,7 +3,7 @@
 #
 # Column mapping:
 #   planned_order              -> orders.order_number
-#   material                   -> orders.sku_id   (resolved via skus.code = material)
+#   material                   -> orders.product_id  (resolved via products.number = material)
 #   planned_order_start_time   -> orders.planned_start_at
 #   planned_order_finish_time  -> orders.planned_complete_at
 #   total_planned_order_qty    -> orders.volume
@@ -11,9 +11,9 @@
 # All imported orders are assigned to production line $LINE (orders.production_line_id).
 # When $LINE is Wired Matts (id $WIRED_MATTS_LINE_ID), cage tracking and the
 # pkg UOM are enabled by default — matching the New Order form's behavior —
-# with cage_size taken from the SKU's pcs_in_pack (falls back to 50).
+# with cage_size taken from the product's pcs_in_pack (falls back to 50).
 #
-# Rows whose `material` doesn't match any skus.code are skipped (no FK match,
+# Rows whose `material` doesn't match any products.number are skipped (no FK match,
 # so the INSERT ... SELECT produces zero rows). Rows are idempotent on
 # order_number (ON CONFLICT DO NOTHING), so re-running is safe.
 #
@@ -65,8 +65,8 @@ awk -F';' -v line="$LINE" -v cage="$CAGE_SQL" -v uom="$UOM_SQL" -v cage_size="$C
     gsub(/'"'"'/, "'"'"''"'"'", start_time)
     gsub(/'"'"'/, "'"'"''"'"'", finish_time)
 
-    printf "INSERT INTO orders (order_number, sku_id, volume, planned_start_at, planned_complete_at, production_line_id, cage, uom_id, cage_size)\n"
-    printf "SELECT '"'"'%s'"'"', s.id, %s, %s, %s, %s, %s, %s, %s FROM skus s WHERE s.code = '"'"'%s'"'"'\n",
+    printf "INSERT INTO orders (order_number, product_id, volume, planned_start_at, planned_complete_at, production_line_id, cage, uom_id, cage_size)\n"
+    printf "SELECT '"'"'%s'"'"', p.id, %s, %s, %s, %s, %s, %s, %s FROM products p WHERE p.number = '"'"'%s'"'"'\n",
       order_number, volume,
       (start_time  == "" ? "NULL" : "'"'"'" start_time  "'"'"'::timestamptz"),
       (finish_time == "" ? "NULL" : "'"'"'" finish_time "'"'"'::timestamptz"),

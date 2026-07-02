@@ -4,6 +4,26 @@
 -- Then load test data:
 --   docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/dwh/seed.sql
 
+-- ── Shifts (referenced by orders, defined before orders table) ───────────────
+
+CREATE TABLE IF NOT EXISTS shifts (
+    id          SERIAL      PRIMARY KEY,
+    code        CHAR(1)     NOT NULL UNIQUE CHECK (code IN ('A','B','C','D')),
+    name        VARCHAR(50) NOT NULL,
+    color       VARCHAR(20) NOT NULL DEFAULT '#6366f1',
+    sort_order  SMALLINT    NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS shift_schedule (
+    id                  INTEGER     PRIMARY KEY DEFAULT 1,
+    pattern             VARCHAR(50) NOT NULL DEFAULT '4on4off',
+    start_time          TIME        NOT NULL DEFAULT '08:00:00',
+    reference_date      DATE        NOT NULL DEFAULT CURRENT_DATE,
+    reference_shift_id  INTEGER     NOT NULL REFERENCES shifts(id),
+    updated_at          TIMESTAMPTZ,
+    updated_by_id       INTEGER     REFERENCES users(id)
+);
+
 -- ── Core ──────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS users (
@@ -27,20 +47,6 @@ CREATE TABLE IF NOT EXISTS uom (
     updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS skus (
-    id               SERIAL PRIMARY KEY,
-    code             VARCHAR(50)  UNIQUE NOT NULL,
-    name             VARCHAR(255) NOT NULL,
-    name_eng         VARCHAR(255),
-    description      TEXT,
-    unit             VARCHAR(50)  DEFAULT 'packages',
-    length           NUMERIC(10,3),
-    width            NUMERIC(10,3),
-    thickness        NUMERIC(10,3),
-    density          NUMERIC(10,3),
-    pcs_in_pack      INTEGER,
-    packs_on_pallet  INTEGER
-);
 
 CREATE TABLE IF NOT EXISTS production_lines (
     id          SERIAL PRIMARY KEY,
@@ -63,7 +69,7 @@ CREATE TABLE IF NOT EXISTS materials (
 CREATE TABLE IF NOT EXISTS orders (
     id                 SERIAL PRIMARY KEY,
     order_number       VARCHAR(100) UNIQUE NOT NULL,
-    sku_id             INTEGER REFERENCES skus(id),
+    product_id         INTEGER REFERENCES products(id),
     production_line_id INTEGER REFERENCES production_lines(id),
     volume             DECIMAL(12, 3) NOT NULL,
     uom_id             INTEGER REFERENCES uom(id),
@@ -83,6 +89,7 @@ CREATE TABLE IF NOT EXISTS orders (
     pkg_produced       INTEGER        NOT NULL DEFAULT 0,
     waste_quantity     DECIMAL(12, 3),
     good_quantity      DECIMAL(12, 3),
+    shift_id           INTEGER REFERENCES shifts(id),
     created_by_id      INTEGER REFERENCES users(id),
     created_at         TIMESTAMPTZ  DEFAULT NOW(),
     updated_at         TIMESTAMPTZ  DEFAULT NOW()
@@ -96,6 +103,15 @@ CREATE TABLE IF NOT EXISTS cages (
     packages         INTEGER      NOT NULL,
     completed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     completed_by_id  INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS order_shift_productions (
+    id          SERIAL PRIMARY KEY,
+    order_id    INTEGER        NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    shift_id    INTEGER        NOT NULL REFERENCES shifts(id),
+    date        DATE           NOT NULL DEFAULT CURRENT_DATE,
+    produced    NUMERIC(12,3)  NOT NULL DEFAULT 0,
+    UNIQUE (order_id, shift_id, date)
 );
 
 -- ── Logging & telemetry ───────────────────────────────────────────────────────
@@ -165,22 +181,27 @@ CREATE TABLE IF NOT EXISTS settings (
 -- ── Master Data ───────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS products (
-    id              SERIAL PRIMARY KEY,
-    number          VARCHAR(50)   NOT NULL UNIQUE,
-    description     TEXT,
-    description_eng TEXT,
-    sku             VARCHAR(50),
-    code            VARCHAR(50),
-    package_code    VARCHAR(50),
-    initial_code    VARCHAR(50),
-    instruction     TEXT,
-    length          NUMERIC(10,3),
-    width           NUMERIC(10,3),
-    thickness       NUMERIC(10,3),
-    density         NUMERIC(10,3),
-    created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    modified_at     TIMESTAMPTZ,
-    modified_by     INTEGER REFERENCES users(id)
+    id               SERIAL PRIMARY KEY,
+    number           VARCHAR(50)   NOT NULL UNIQUE,
+    name             VARCHAR(255),
+    name_eng         VARCHAR(255),
+    description      TEXT,
+    description_eng  TEXT,
+    sku              VARCHAR(50),
+    code             VARCHAR(50),
+    package_code     VARCHAR(50),
+    initial_code     VARCHAR(50),
+    instruction      TEXT,
+    unit             VARCHAR(50)   DEFAULT 'packages',
+    pcs_in_pack      INTEGER,
+    packs_on_pallet  INTEGER,
+    length           NUMERIC(10,3),
+    width            NUMERIC(10,3),
+    thickness        NUMERIC(10,3),
+    density          NUMERIC(10,3),
+    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    modified_at      TIMESTAMPTZ,
+    modified_by      INTEGER REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS general_sp (
