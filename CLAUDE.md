@@ -6,7 +6,7 @@
 - NATS 2.10 — message broker with JetStream persistence (line state events)
 - CloudBeaver — web DB client for PostgreSQL + ClickHouse (port 8978)
 - pgAdmin 4 — PostgreSQL admin UI (port 5050)
-- docker compose in `/home/nik/projects/dwh/`
+- docker compose in `/home/nik/projects/mes-dwh/`
 
 ## Connection details
 
@@ -27,17 +27,20 @@ docker compose up -d          # start
 docker compose down           # stop
 docker compose down -v        # wipe volumes
 
-# PostgreSQL — apply schema then test data
-docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/dwh/init.sql
-docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/dwh/seed.sql
+# PostgreSQL — fresh install: apply schema then test data
+docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/mes-dwh/init.sql
+docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/mes-dwh/seed.sql
+
+# PostgreSQL — existing DB: run migrations (safe to re-run)
+docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/mes-dwh/migrate.sql
 
 # ClickHouse historian — apply schema then test data (run once each)
 docker exec -i clickhouse-db clickhouse-client \
   --user nik --password mysecretpassword --multiquery \
-  < ~/projects/dwh/init_clickhouse.sql
+  < ~/projects/mes-dwh/init_clickhouse.sql
 docker exec -i clickhouse-db clickhouse-client \
   --user nik --password mysecretpassword --multiquery \
-  < ~/projects/dwh/seed_clickhouse.sql
+  < ~/projects/mes-dwh/seed_clickhouse.sql
 
 # Wipe and re-seed ClickHouse historian (all four tables)
 docker exec -i clickhouse-db clickhouse-client \
@@ -45,7 +48,7 @@ docker exec -i clickhouse-db clickhouse-client \
   --query "TRUNCATE TABLE historian.production_metrics; TRUNCATE TABLE historian.energy_metrics; TRUNCATE TABLE historian.waste_metrics; TRUNCATE TABLE historian.process_snapshots;"
 
 # Seed only process_snapshots (without re-seeding everything)
-awk '/^-- ── Process snapshots/,0' ~/projects/dwh/seed_clickhouse.sql | \
+awk '/^-- ── Process snapshots/,0' ~/projects/mes-dwh/seed_clickhouse.sql | \
   docker exec -i clickhouse-db clickhouse-client \
   --user nik --password mysecretpassword --multiquery
 ```
@@ -54,9 +57,10 @@ awk '/^-- ── Process snapshots/,0' ~/projects/dwh/seed_clickhouse.sql | \
 
 | File | Purpose |
 |------|---------|
-| `init.sql` | PostgreSQL DDL — `CREATE TABLE IF NOT EXISTS` + indexes. No data. |
-| `seed.sql` | PostgreSQL test data — idempotent (`ON CONFLICT … DO NOTHING`). Includes 6 production lines, 9 materials, April 2026 orders. |
-| `init_clickhouse.sql` | ClickHouse DDL — creates `historian` database + 3 tables (production_metrics, energy_metrics, waste_metrics). |
+| `init.sql` | PostgreSQL DDL — `CREATE TABLE IF NOT EXISTS` + indexes. No data. Use for fresh installs. |
+| `migrate.sql` | PostgreSQL incremental migrations — safe to run on an existing DB. Handles: SKU→Products merge, shift tables (`shifts`, `shift_schedule`, `order_shift_productions`). Also seeds shifts A–D and a default schedule. |
+| `seed.sql` | PostgreSQL test data — idempotent (`ON CONFLICT … DO NOTHING`). Includes 6 production lines, 9 materials, April 2026 orders, 5 products + setpoints. |
+| `init_clickhouse.sql` | ClickHouse DDL — creates `historian` database + 4 tables (production_metrics, energy_metrics, waste_metrics, process_snapshots). |
 | `seed_clickhouse.sql` | ClickHouse test data — April 2026 production, energy, waste metrics (~38k rows). **Not idempotent** — run once. |
 | `import-production-plan.sh` | Imports a `;`-delimited production-plan CSV into `orders`. See "Production plan CSV import" below. |
 | `production_plan_sample.csv` | Small sample CSV matching the real export format, for testing the import script. |
@@ -69,15 +73,22 @@ awk '/^-- ── Process snapshots/,0' ~/projects/dwh/seed_clickhouse.sql | \
 |-------|-------------|-------|
 | `users` | `keycloak_id`, `email`, `username`, `full_name`, `role`, `last_login`, `last_alert_ack_at` | Upserted on every login; `keycloak_id` is JWT `sub` |
 | `uom` | `code`, `name`, `name_eng`, `type` | Unit of measure reference (kg, t, m², m³, pcs, L, m, g); `name_eng` is the English display name |
-| `skus` | `code`, `name`, `name_eng`, `description`, `unit` | Product SKU catalogue; `name_eng` is the English display name |
-| `production_lines` | `id` (1–6), `name`, `description`, `status` | 6 production lines: Line 1, Line 2, Briquette, Wired Matts, Rockfon, Grodan |
+| `production_lines` | `id` (1–6), `name`, `description`, `status` | 6 production lines: Line 1, Line 2, Briquette, Wired Matts (id=4), Rockfon, Grodan |
 | `materials` | `code`, `name`, `name_eng`, `unit`, `stock_quantity` | Raw material inventory; `name_eng` is the English display name |
+
+### Shifts
+
+| Table | Key columns | Notes |
+|-------|-------------|-------|
+| `shifts` | `id`, `code` (A/B/C/D), `name`, `color`, `sort_order` | Four production shifts; code and sort_order are immutable; name and color are editable by admins |
+| `shift_schedule` | `id=1`, `pattern`, `start_time`, `reference_date`, `reference_shift_id` | Single-row config defining the plant's rotation; patterns: `4on4off` (16-day), `dupont` (28-day), `continental` (12-day) |
 
 ### Orders
 
 | Table | Key columns | Notes |
 |-------|-------------|-------|
-| `orders` | `order_number`, `sku_id`, `production_line_id`, `volume`, `uom_id`, `status`, `priority`, `due_date`, `cage`, `cage_size`, `produced_volume`, `pkg_produced`, `created_by_id` | Status: `created` → `running` → `paused` → `running` → `completed` / `cancelled` |
+| `orders` | `order_number`, `product_id`, `production_line_id`, `volume`, `uom_id`, `status`, `priority`, `due_date`, `cage`, `cage_size`, `produced_volume`, `pkg_produced`, `waste_quantity`, `good_quantity`, `shift_id`, `created_by_id` | Status: `created` → `running` → `paused` → `running` → `completed` / `cancelled`. `shift_id` = shift active when the order was first started. Only one order can be `running` per line at a time. |
+| `order_shift_productions` | `order_id`, `shift_id`, `date`, `produced` | Per-shift production accumulator; UNIQUE(order_id, shift_id, date); populated at cage-completion time via UPSERT |
 | `cages` | `order_number`, `cage_guid`, `cage_size`, `packages`, `completed_at`, `completed_by_id` | One row per completed cage; `cage_guid` is `gen_random_uuid()` |
 
 ### Logging & telemetry
@@ -99,7 +110,7 @@ awk '/^-- ── Process snapshots/,0' ~/projects/dwh/seed_clickhouse.sql | \
 
 | Table | Key columns | Notes |
 |-------|-------------|-------|
-| `products` | `number` (unique), `description`, `description_eng`, `sku`, `code`, `package_code`, `initial_code`, `instruction`, `length`, `width`, `thickness`, `density` | Product master record; `description_eng` is the English display description |
+| `products` | `number` (unique), `name`, `name_eng`, `description`, `description_eng`, `sku`, `code`, `package_code`, `initial_code`, `instruction`, `length`, `width`, `thickness`, `density`, `pcs_in_pack`, `packs_on_pallet` | Product master record (merged from old `skus` table — `skus` no longer exists) |
 | `general_sp` | `product_id` (unique FK), `package`, `abc_cat`, `waste_suply`, `drum_pressure`, `saw_cross`, `product_type`, `energy_class`, `binder_type`, … | General setpoints; one row per product |
 | `saws_sp` | `product_id` (unique FK), `trimming_waste_ows`, `plates_in_pkg`, `cut_direction`, `layers`, `sheet_width`, `cut_width`, … | Saw setpoints |
 | `tahu_sp` | `product_id` (unique FK), `tahu_finish_pack_height`, `tahu_output_height`, `tahu_side_welding`, `tahu_film_width`, `tahu_foil_code`, … | TAHU (packaging) setpoints |
@@ -117,9 +128,9 @@ Seeded via `ON CONFLICT … DO NOTHING` so the script is safe to re-run on a liv
 |---------|-------|-------|
 | Settings | 5 keys | `timeline_auto_refresh_enabled`, `timeline_refresh_interval_seconds`, `show_efficiency_chart`, `show_stats_cards`, `show_uptime_diagram` |
 | UOMs | 8 | kg, t, pcs, m, m², m³, L, g |
-| SKUs | 10 | Mineral wool product SKUs |
 | Production lines | 6 | Line 1, Line 2, Briquette (id 3), Wired Matts (id 4), Rockfon (id 5), Grodan (id 6) — uses `ON CONFLICT DO UPDATE` |
 | Materials | 9 | Basalt Fibre, Phenol Binder, PE Shrink Film, Stretch Wrap, Pallet, Basalt Rock, Volcanic Tuff, Petroleum Coke, PP Film Roll |
+| Shifts | 4 | A (blue), B (green), C (amber), D (red) — seeded in `migrate.sql`, not `seed.sql` |
 | Machine states | 46 | Historical state log for all 6 lines (guarded with `WHERE NOT EXISTS`) |
 | Products | 5 | PRD-A100 (Slab 100mm), PRD-A200 (Slab 50mm), PRD-B150 (Wired Matt 50mm), PRD-B300 (Wired Matt 100mm), PRD-D100 (Flexi Roll 25mm) |
 | Setpoints | 5 rows × 6 tables | All setpoint tables seeded for every product; IDs resolved by `JOIN products p ON p.number = v.num` |
@@ -197,16 +208,18 @@ Column mapping (by CSV header name, order-independent):
 | CSV column | `orders` column |
 |------------|------------------|
 | `planned_order` | `order_number` |
-| `material` | `sku_id` (resolved via `skus.code = material`) |
+| `material` | `product_id` (resolved via `products.number = material`) |
 | `planned_order_start_time` | `planned_start_at` |
 | `planned_order_finish_time` | `planned_complete_at` |
 | `total_planned_order_qty` | `volume` |
 
-All rows in a run go to the same `production_line_id = $LINE`. When `$LINE` is Wired Matts (id 4, the default), `cage=true` and `uom_id` is set to `pkg` automatically — matching the New Order form's behavior — with `cage_size = skus.pcs_in_pack` (falls back to 50 if unset). For any other line, `cage=false` and `uom_id`/`cage_size` take their schema defaults. `status='created'`, `priority='Medium'` always. Rows whose `material` doesn't match any `skus.code` are silently skipped (the `INSERT … SELECT … WHERE s.code = …` returns zero rows). Idempotent on `order_number` (`ON CONFLICT DO NOTHING`) — safe to re-run on a partially-imported file.
+All rows in a run go to the same `production_line_id = $LINE`. When `$LINE` is Wired Matts (id 4, the default), `cage=true` and `uom_id` is set to `pkg` automatically — matching the New Order form's behavior — with `cage_size = products.pcs_in_pack` (falls back to 50 if unset). For any other line, `cage=false` and `uom_id`/`cage_size` take their schema defaults. `status='created'`, `priority='Medium'` always. Rows whose `material` doesn't match any `products.number` are silently skipped. Idempotent on `order_number` (`ON CONFLICT DO NOTHING`) — safe to re-run on a partially-imported file.
 
 ## Rules
 - `init.sql` is DDL only — no data, no `INSERT` statements
 - `seed.sql` is idempotent test data — `ON CONFLICT … DO NOTHING` on every INSERT
-- Always run `init.sql` before `seed.sql`
+- Always run `init.sql` before `seed.sql`; for existing DBs run `migrate.sql` instead of `init.sql`
+- Any new table must be added to **both** `init.sql` (for fresh installs) and `migrate.sql` (for existing DBs)
 - `seed_clickhouse.sql` is NOT idempotent — run once; truncate tables before re-seeding
 - Never commit passwords — they are dev-only values
+- The `skus` table no longer exists — all product/SKU data lives in `products`
