@@ -1,8 +1,6 @@
--- MES migration: SKU→Products merge + Shift Schedule
--- Run against an existing DB (after init.sql has been applied):
---   docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/dwh/migrate.sql
---
--- Safe to re-run: uses IF NOT EXISTS / ON CONFLICT guards throughout.
+-- MES incremental migrations
+-- Safe to re-run on an existing DB: uses IF NOT EXISTS / ON CONFLICT guards.
+--   docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/mes-dwh/migrate.sql
 
 -- ── 1. Add ordering fields to products (absorb skus) ─────────────────────────
 
@@ -14,8 +12,6 @@ ALTER TABLE products
   ADD COLUMN IF NOT EXISTS packs_on_pallet  INTEGER;
 
 -- ── 2. Absorb skus table into products ────────────────────────────────────────
--- For each sku, upsert a product with number = sku.code.
--- If a product with the same number already exists, fill in any missing fields.
 
 DO $$
 BEGIN
@@ -40,7 +36,6 @@ END $$;
 
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS product_id INTEGER REFERENCES products(id);
 
--- Link existing orders through the old sku → new product mapping
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns
@@ -77,10 +72,10 @@ CREATE TABLE IF NOT EXISTS shifts (
 
 CREATE TABLE IF NOT EXISTS shift_schedule (
   id                  INTEGER     PRIMARY KEY DEFAULT 1,
-  pattern             VARCHAR(50) NOT NULL DEFAULT '4on4off',
+  pattern             VARCHAR(50) NOT NULL DEFAULT '2on2off2night2off',
   start_time          TIME        NOT NULL DEFAULT '08:00:00',
-  reference_date      DATE        NOT NULL DEFAULT CURRENT_DATE,
-  reference_shift_id  INTEGER     NOT NULL REFERENCES shifts(id),
+  reference_date      DATE,
+  reference_shift_id  INTEGER     REFERENCES shifts(id),
   updated_at          TIMESTAMPTZ,
   updated_by_id       INTEGER     REFERENCES users(id)
 );
@@ -97,8 +92,7 @@ INSERT INTO shifts (code, name, color, sort_order) VALUES
 ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO shift_schedule (id, pattern, start_time, reference_date, reference_shift_id)
-SELECT 1, '4on4off', '08:00:00'::time, CURRENT_DATE, s.id
-FROM shifts s WHERE s.code = 'A'
+VALUES (1, '2on2off2night2off', '08:00:00'::time, NULL, NULL)
 ON CONFLICT (id) DO NOTHING;
 
 -- ── 7. Per-shift production tracking ─────────────────────────────────────────
@@ -111,3 +105,28 @@ CREATE TABLE IF NOT EXISTS order_shift_productions (
     produced    NUMERIC(12,3)  NOT NULL DEFAULT 0,
     UNIQUE (order_id, shift_id, date)
 );
+
+-- ── 8. Day/Night shift pattern support ───────────────────────────────────────
+
+-- Allow null reference_date / reference_shift_id (new pattern uses shift_references instead)
+ALTER TABLE shift_schedule ALTER COLUMN reference_date     DROP NOT NULL;
+ALTER TABLE shift_schedule ALTER COLUMN reference_shift_id DROP NOT NULL;
+
+-- Per-shift anchor dates for 2on2off2night2off pattern
+CREATE TABLE IF NOT EXISTS shift_references (
+    shift_id        INTEGER NOT NULL PRIMARY KEY REFERENCES shifts(id) ON DELETE CASCADE,
+    reference_date  DATE    NOT NULL,
+    UNIQUE (reference_date)
+);
+
+-- Seed shift_references if not already set (2-day spacing so every day has 1 day + 1 night shift)
+INSERT INTO shift_references (shift_id, reference_date)
+SELECT s.id, CURRENT_DATE + (s.sort_order * 2)
+FROM shifts s
+ON CONFLICT (shift_id) DO NOTHING;
+
+-- ── 9. Production line status correction ─────────────────────────────────────
+
+UPDATE production_lines SET status = 'inactive'
+WHERE id IN (3, 5, 6)          -- Briquette, Rockfon, Grodan
+  AND status = 'active';

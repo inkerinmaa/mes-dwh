@@ -57,9 +57,9 @@ awk '/^-- ── Process snapshots/,0' ~/projects/mes-dwh/seed_clickhouse.sql | 
 
 | File | Purpose |
 |------|---------|
-| `init.sql` | PostgreSQL DDL — `CREATE TABLE IF NOT EXISTS` + indexes. No data. Use for fresh installs. |
-| `migrate.sql` | PostgreSQL incremental migrations — safe to run on an existing DB. Handles: SKU→Products merge, shift tables (`shifts`, `shift_schedule`, `order_shift_productions`). Also seeds shifts A–D and a default schedule. |
-| `seed.sql` | PostgreSQL test data — idempotent (`ON CONFLICT … DO NOTHING`). Includes 6 production lines, 9 materials, April 2026 orders, 5 products + setpoints. |
+| `init.sql` | PostgreSQL DDL — `CREATE TABLE IF NOT EXISTS` + indexes. No data. Use for fresh installs. Tables are ordered to satisfy FK deps on first run (no `--single-transaction` hack needed). |
+| `migrate.sql` | PostgreSQL incremental migrations — safe to run on an existing DB. Handles: SKU→Products merge, shift tables, `order_shift_productions`, `shift_references`, production line status corrections. Seeds shifts A–D and default `2on2off2night2off` schedule. |
+| `seed.sql` | PostgreSQL test data — idempotent (`ON CONFLICT … DO NOTHING`). Includes production lines (Lines 1, 2, Wired Matts active; others inactive), 4 WM products, shift schedule seeding. |
 | `init_clickhouse.sql` | ClickHouse DDL — creates `historian` database + 4 tables (production_metrics, energy_metrics, waste_metrics, process_snapshots). |
 | `seed_clickhouse.sql` | ClickHouse test data — April 2026 production, energy, waste metrics (~38k rows). **Not idempotent** — run once. |
 | `import-production-plan.sh` | Imports a `;`-delimited production-plan CSV into `orders`. See "Production plan CSV import" below. |
@@ -81,7 +81,8 @@ awk '/^-- ── Process snapshots/,0' ~/projects/mes-dwh/seed_clickhouse.sql | 
 | Table | Key columns | Notes |
 |-------|-------------|-------|
 | `shifts` | `id`, `code` (A/B/C/D), `name`, `color`, `sort_order` | Four production shifts; code and sort_order are immutable; name and color are editable by admins |
-| `shift_schedule` | `id=1`, `pattern`, `start_time`, `reference_date`, `reference_shift_id` | Single-row config defining the plant's rotation; patterns: `4on4off` (16-day), `dupont` (28-day), `continental` (12-day) |
+| `shift_schedule` | `id=1`, `pattern`, `start_time`, `reference_date`?, `reference_shift_id`? | Single-row config; patterns: `4on4off` (16-day), `dupont` (28-day), `continental` (12-day), `2on2off2night2off` (8-day day/night). Default: `2on2off2night2off` — uses `shift_references` instead of `reference_date`/`reference_shift_id`. |
+| `shift_references` | `shift_id` (PK), `reference_date` (UNIQUE) | Per-shift cycle anchor dates for `2on2off2night2off`. Dates must all differ. 2-day spacing (A=today, B=+2, C=+4, D=+6) gives one day-shift + one night-shift per calendar day. |
 
 ### Orders
 
