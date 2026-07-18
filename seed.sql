@@ -11,7 +11,10 @@ INSERT INTO settings (key, value) VALUES
     ('timeline_refresh_interval_seconds', '60'),
     ('show_efficiency_chart',             'false'),
     ('show_stats_cards',                  'false'),
-    ('show_uptime_diagram',               'false')
+    ('show_uptime_diagram',               'false'),
+    ('order_color_running',               '#bbf7d0'),
+    ('order_color_completed',             '#bfdbfe'),
+    ('order_color_queued',                '#fef08a')
 ON CONFLICT (key) DO NOTHING;
 
 -- ── Units of measure ──────────────────────────────────────────────────────────
@@ -19,7 +22,8 @@ ON CONFLICT (key) DO NOTHING;
 INSERT INTO uom (code, name, name_eng, type) VALUES
     ('kg',  'Килограмм',     'Kilogram',     'weight'),
     ('t',   'Тонна',        'Ton',          'weight'),
-    ('pkg', 'Пачка',     'Packages',     'count'),
+    ('pcs', 'Пачка',     'pcs',          'count'),
+    ('pal', 'Паллета',   'Pallet',       'count'),
     ('m',   'Метр',        'Meter',         'length'),
     ('m2',  'Квадратный метр', 'Square meter', 'area'),
     ('m3',  'Кубический метр',  'Cubic meter', 'volume')
@@ -36,8 +40,8 @@ ON CONFLICT (code) DO NOTHING;
 
 -- Pattern: 2 day / 2 off / 2 night / 2 off (8-day cycle per shift)
 -- reference_date/reference_shift_id unused for this pattern — per-shift dates live in shift_references
-INSERT INTO shift_schedule (id, pattern, start_time, reference_date, reference_shift_id)
-VALUES (1, '2on2off2night2off', '08:00:00'::time, NULL, NULL)
+INSERT INTO shift_schedule (id, pattern, start_time, timezone, reference_date, reference_shift_id)
+VALUES (1, '2on2off2night2off', '08:00:00'::time, 'Europe/Moscow', NULL, NULL)
 ON CONFLICT (id) DO NOTHING;
 
 -- Anchor each shift's cycle with dates 2 days apart so every calendar day has
@@ -145,24 +149,82 @@ FROM (VALUES
 ) AS v(line_id, state, offset_interval)
 WHERE NOT EXISTS (SELECT 1 FROM machine_states LIMIT 1);
 
--- ── Products (unified: manufacturing recipes + SAP ordering codes) ───────────
+-- ── Product groups ────────────────────────────────────────────────────────────
 
-INSERT INTO products (number, name, name_eng, description, description_eng,
-                      sku, code, package_code, initial_code, instruction,
-                      unit, length, width, thickness, density)
+INSERT INTO product_groups (id, name, name_eng) VALUES
+    (1, 'Вайред Матс',    'Wired Matts'),
+    (2, 'Плиты',          'Slabs'),
+    (3, 'Рулоны',         'Rolls')
+ON CONFLICT (id) DO NOTHING;
+
+-- ── Correction types ──────────────────────────────────────────────────────────
+
+INSERT INTO correction_types (id, name, name_eng) VALUES
+    (1, 'Абсолютная',    'Absolute'),
+    (2, 'Относительная', 'Relative')
+ON CONFLICT (id) DO NOTHING;
+
+-- ── Equipment units ───────────────────────────────────────────────────────────
+
+INSERT INTO units (id, name, name_eng, display_order) VALUES
+    (1, 'Куринг',       'Curing',     10),
+    (2, 'Кон. автомат', 'ACON',       20),
+    (3, 'Связующее',    'Binder',     30),
+    (4, 'Пилы',         'Saws',       40),
+    (5, 'Упаковка',     'Packaging',  50),
+    (6, 'Паллетайзер',  'Unitloader', 60)
+ON CONFLICT (id) DO NOTHING;
+
+-- ── Setpoints per product group ───────────────────────────────────────────────
+
+INSERT INTO setpoints (id, product_group_id, unit_id, correction_type_id, name, name_eng, value, display_order) VALUES
+    -- Wired Matts (group 1)
+    (1,  1, 1, 1, 'Температура куринга',  'Curing temperature', '240',  10),
+    (2,  1, 1, 1, 'Скорость конвейера',   'Conveyor speed',     '3.5',  20),
+    (3,  1, 2, 1, 'Ширина полотна',       'Web width',          '7200', 30),
+    (4,  1, 3, 1, 'Дозировка связующего', 'Binder dosing',      '12.5', 40),
+    -- Slabs (group 2)
+    (5,  2, 1, 1, 'Температура куринга',  'Curing temperature', '220',  10),
+    (6,  2, 1, 1, 'Скорость конвейера',   'Conveyor speed',     '4.2',  20),
+    (7,  2, 4, 1, 'Длина реза',           'Cut length',         '1200', 30),
+    (8,  2, 4, 1, 'Ширина реза',          'Cut width',          '600',  40),
+    -- Rolls (group 3)
+    (9,  3, 1, 1, 'Температура куринга',  'Curing temperature', '200',  10),
+    (10, 3, 1, 1, 'Скорость конвейера',   'Conveyor speed',     '5.0',  20),
+    (11, 3, 2, 1, 'Ширина полотна',       'Web width',          '1200', 30)
+ON CONFLICT (id) DO NOTHING;
+
+-- ── Products ──────────────────────────────────────────────────────────────────
+
+INSERT INTO products (number, group_id, name, name_eng, cover_code, package_code,
+                      uom, pcs_in_pack, packs_in_package,
+                      length, width, thickness, density, layers,
+                      norm_waste, edge_trim_width)
 VALUES
-    ('WM-105', 'ВАЙРЕД МАТ 105', 'Wired Mat 105',
-     'ВАЙРЕД МАТ 105 КФ1 7000х1000х25', 'WIRED MAT 105 KF1 7000x1000x25',
-     'WM-105', 'WM-105', 'PAK-SL-105', 'IA105', '',
-     'packages', 1000, 7000, 25, 105),
-    ('WM-100', 'ВАЙРЕД МАТ 100', 'Wired Mat 100',
-     'ВАЙРЕД МАТ 100 КФ1 7000х1000х25', 'WIRED MAT 100 KF1 7000x1000x25',
-     'WM-100', 'WM-100', 'PAK-SL-100', 'IA100', '',
-     'packages', 1000, 7000, 25, 100)
+    ('WM-105', 1, 'ВАЙРЕД МАТ 105', 'Wired Mat 105',
+     'WM-105', 'PAK-SL-105', 'packages', 1, 7,
+     1000, 7000, 25, 105, 1, 3.0, 5.0),
+    ('WM-100', 1, 'ВАЙРЕД МАТ 100', 'Wired Mat 100',
+     'WM-100', 'PAK-SL-100', 'packages', 1, 7,
+     1000, 7000, 25, 100, 1, 3.0, 5.0),
+    ('SL-50',  2, 'ПЛИТА 50',       'Slab 50mm',
+     'SL-050', 'PAK-SL-050', 'packages', 4, 8,
+     1200, 600, 50, 80, 2, 2.5, 4.0)
 ON CONFLICT (number) DO UPDATE SET
-    name    = EXCLUDED.name,
-    name_eng = EXCLUDED.name_eng,
-    unit    = EXCLUDED.unit;
+    name              = EXCLUDED.name,
+    name_eng          = EXCLUDED.name_eng,
+    cover_code        = EXCLUDED.cover_code,
+    package_code      = EXCLUDED.package_code,
+    uom               = EXCLUDED.uom,
+    pcs_in_pack       = EXCLUDED.pcs_in_pack,
+    packs_in_package  = EXCLUDED.packs_in_package,
+    length            = EXCLUDED.length,
+    width             = EXCLUDED.width,
+    thickness         = EXCLUDED.thickness,
+    density           = EXCLUDED.density,
+    layers            = EXCLUDED.layers,
+    norm_waste        = EXCLUDED.norm_waste,
+    edge_trim_width   = EXCLUDED.edge_trim_width;
 
 
 -- ── General setpoints ─────────────────────────────────────────────────────────
@@ -321,3 +383,35 @@ ON CONFLICT (number) DO UPDATE SET
 -- JOIN skus s ON s.code = v.sku_code
 -- JOIN uom u ON u.code = 'pkg'
 -- ON CONFLICT (order_number) DO NOTHING;
+
+-- ── Binder types ───────────────────────────────────────────────────────────────
+INSERT INTO binder_types (id, name, name_eng) VALUES
+    (1,   'МДИ',   'MDI'),
+    (2,   'ПМДИ',  'PMDI'),
+    (3,   'ТДИ',   'TDI'),
+    (100, 'ПУФ',   'PUF')
+ON CONFLICT (id) DO NOTHING;
+
+-- ── PKF groups ─────────────────────────────────────────────────────────────────
+INSERT INTO pkf_groups (id, name, name_eng) VALUES
+    (1, 'Общестроительная изоляция', 'General Building Insulation'),
+    (2, 'Техническая изоляция',      'Technical Insulation'),
+    (3, 'Фасадная изоляция',         'Facade Insulation'),
+    (4, 'Кровельная изоляция',       'Roof Insulation')
+ON CONFLICT (id) DO NOTHING;
+
+-- ── Product attributes for 216094 (id=3) and 216095 (id=4) ───────────────────
+INSERT INTO product_attributes (product_id, name, name_eng, value_type, default_value, sort_order) VALUES
+    (3, 'Скорость пилы разрезки',  'Dividing sawblade speed', 'integer',     '80',  1),
+    (3, 'Скорость гранулятора',    'Granulator speed',        'integer',     '90',  2),
+    (3, 'Код рецепта',             'Label1 Res. code',        'text',        '254637', 3),
+    (3, 'Тип связующего',          'Binder type',             'binder_type', '100', 4),
+    (3, 'Норматив GW1, кг/ч',      'Budget GW1 kg/h',         'numeric',     '6700', 5),
+    (3, 'Группа ПКФ',              'PKF Group',               'pkf_group',   '1',   6),
+    (4, 'Скорость пилы разрезки',  'Dividing sawblade speed', 'integer',     '80',  1),
+    (4, 'Скорость гранулятора',    'Granulator speed',        'integer',     '90',  2),
+    (4, 'Код рецепта',             'Label1 Res. code',        'text',        '254637', 3),
+    (4, 'Тип связующего',          'Binder type',             'binder_type', '100', 4),
+    (4, 'Норматив GW1, кг/ч',      'Budget GW1 kg/h',         'numeric',     '6700', 5),
+    (4, 'Группа ПКФ',              'PKF Group',               'pkf_group',   '1',   6)
+ON CONFLICT (product_id, name_eng) DO NOTHING;

@@ -36,10 +36,12 @@ CREATE TABLE IF NOT EXISTS uom (
 );
 
 CREATE TABLE IF NOT EXISTS production_lines (
-    id          SERIAL PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    description TEXT,
-    status      VARCHAR(50)  DEFAULT 'active'
+    id                    SERIAL PRIMARY KEY,
+    name                  VARCHAR(100) NOT NULL,
+    description           TEXT,
+    status                VARCHAR(50)  DEFAULT 'active',
+    order_control_enabled BOOLEAN      NOT NULL DEFAULT TRUE,
+    manual_waste_enabled  BOOLEAN      NOT NULL DEFAULT TRUE
 );
 
 CREATE TABLE IF NOT EXISTS materials (
@@ -47,143 +49,88 @@ CREATE TABLE IF NOT EXISTS materials (
     code           VARCHAR(50)    UNIQUE NOT NULL,
     name           VARCHAR(255)   NOT NULL,
     name_eng       VARCHAR(255),
-    unit           VARCHAR(50)    NOT NULL,
+    uom            VARCHAR(50)    NOT NULL,
     stock_quantity DECIMAL(10, 3) DEFAULT 0
 );
 
 -- ── Master Data ───────────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS products (
-    id               SERIAL PRIMARY KEY,
-    number           VARCHAR(50)   NOT NULL UNIQUE,
-    name             VARCHAR(255),
-    name_eng         VARCHAR(255),
-    description      TEXT,
-    description_eng  TEXT,
-    sku              VARCHAR(50),
-    code             VARCHAR(50),
-    package_code     VARCHAR(50),
-    initial_code     VARCHAR(50),
-    instruction      TEXT,
-    unit             VARCHAR(50)   DEFAULT 'packages',
-    pcs_in_pack      INTEGER,
-    packs_on_pallet  INTEGER,
-    length           NUMERIC(10,3),
-    width            NUMERIC(10,3),
-    thickness        NUMERIC(10,3),
-    density          NUMERIC(10,3),
-    created_at       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    modified_at      TIMESTAMPTZ,
-    modified_by      INTEGER REFERENCES users(id)
+CREATE TABLE IF NOT EXISTS product_groups (
+    id        SERIAL PRIMARY KEY,
+    name      TEXT NOT NULL,
+    name_eng  TEXT
 );
 
-CREATE TABLE IF NOT EXISTS general_sp (
-    id                      SERIAL PRIMARY KEY,
-    product_id              INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-    package                 VARCHAR(50),
-    abc_cat                 VARCHAR(10),
-    waste_suply             NUMERIC(10,3),
-    remark                  TEXT,
-    info                    TEXT,
-    labelling               VARCHAR(100),
-    state                   VARCHAR(50),
-    data_check              BOOLEAN,
-    drum_pressure           NUMERIC(10,3),
-    saw_cross               NUMERIC(10,3),
-    labelling_state         VARCHAR(50),
-    product_type            VARCHAR(50),
-    split_in_pair_113_114   BOOLEAN,
-    product_turn_pos_122    VARCHAR(50),
-    weight_limit_max_perc   NUMERIC(10,3),
-    weight_limit_min_perc   NUMERIC(10,3),
-    flexi_turn              BOOLEAN,
-    flexi_width             NUMERIC(10,3),
-    energy_class            VARCHAR(20),
-    binder_type             VARCHAR(50),
-    pkf_group               VARCHAR(50),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    modified_at             TIMESTAMPTZ,
-    modified_by             INTEGER REFERENCES users(id)
+-- Production-line equipment units (curing, ACON, binder, saws, packaging, etc.)
+CREATE TABLE IF NOT EXISTS units (
+    id            SERIAL PRIMARY KEY,
+    name          TEXT NOT NULL,
+    name_eng      TEXT,
+    display_order INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS saws_sp (
+CREATE TABLE IF NOT EXISTS correction_types (
+    id        SERIAL PRIMARY KEY,
+    name      TEXT NOT NULL,
+    name_eng  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS setpoints (
     id                  SERIAL PRIMARY KEY,
-    product_id          INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-    trimming_waste_ows  NUMERIC(10,3),
-    plates_in_pkg       INTEGER,
-    cut_direction       VARCHAR(50),
-    layers              INTEGER,
-    waste_std           NUMERIC(10,3),
-    trimming_waste_ow   NUMERIC(10,3),
-    sheet_width         NUMERIC(10,3),
-    cut_width           NUMERIC(10,3),
-    raw_edge_width      NUMERIC(10,3),
+    product_group_id    INTEGER REFERENCES product_groups(id),
+    unit_id             INTEGER REFERENCES units(id),
+    correction_type_id  INTEGER REFERENCES correction_types(id),
+    uom_id              INTEGER REFERENCES uom(id),
+    name                TEXT NOT NULL,
+    name_eng            TEXT,
+    value               TEXT,
+    comment             TEXT,
+    display_order       INTEGER NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     modified_at         TIMESTAMPTZ,
     modified_by         INTEGER REFERENCES users(id)
 );
 
-CREATE TABLE IF NOT EXISTS tahu_sp (
-    id                      SERIAL PRIMARY KEY,
-    product_id              INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-    tahu_finish_pack_height NUMERIC(10,3),
-    tahu_output_height      NUMERIC(10,3),
-    tahu_side_welding       NUMERIC(10,3),
-    tahu_film_width         NUMERIC(10,3),
-    tahu_vacuum             NUMERIC(10,3),
-    tahu_use_shrink_heat    BOOLEAN,
-    tahu_smart_date         BOOLEAN,
-    tahu_foil_code          VARCHAR(50),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    modified_at             TIMESTAMPTZ,
-    modified_by             INTEGER REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS bundler_sp (
-    id                       SERIAL PRIMARY KEY,
-    product_id               INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-    bundler_packs_per_bundle INTEGER,
-    bundler_comp_length      NUMERIC(10,3),
-    bundler_output_length    NUMERIC(10,3),
-    product_turn_pos_608     VARCHAR(50),
-    group_product_pos_608    VARCHAR(50),
-    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    modified_at              TIMESTAMPTZ,
-    modified_by              INTEGER REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS consumables_sp (
+CREATE TABLE IF NOT EXISTS products (
     id                   SERIAL PRIMARY KEY,
-    product_id           INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-    bundle_plastic_code  VARCHAR(50),
-    hooder_plastic_code  VARCHAR(50),
-    wrapper_plastic_code VARCHAR(50),
-    check_layers         INTEGER,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    number               VARCHAR(50)    NOT NULL UNIQUE,
+    group_id             INTEGER        REFERENCES product_groups(id),
+    name                 VARCHAR(255),
+    name_eng             VARCHAR(255),
+    cover_code           VARCHAR(50),
+    package_code         VARCHAR(50),
+    sequence             INTEGER,
+    production_instruction TEXT,
+    uom                  VARCHAR(50)    DEFAULT 'pcs', -- packaging unit (pcs / pack / pal)
+    cut_direction        TEXT,
+    pcs_in_pack          INTEGER,
+    packs_in_package     INTEGER,
+    length               NUMERIC(10,3),
+    width                NUMERIC(10,3),
+    thickness            NUMERIC(10,3),
+    density              NUMERIC(10,3),
+    layers               INTEGER,
+    grinding_waste       NUMERIC(10,3),
+    norm_waste           NUMERIC(10,3),
+    grinding_waste_ow    NUMERIC(10,3),
+    category             TEXT,
+    comment              TEXT,
+    direct_recycle_mode  INTEGER,
+    info_1               TEXT,
+    info_2               TEXT,
+    info_3               TEXT,
+    info_4               TEXT,
+    info_5               TEXT,
+    info_6               TEXT,
+    product_line_width   NUMERIC(10,3),
+    edge_trim_width      NUMERIC(10,3),
+    wet_edge_trim_mode   NUMERIC(10,3),
+    wet_edge_trim_width  NUMERIC(10,3),
+    mark                 INTEGER,
+    state                INTEGER,
+    created_at           TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
     modified_at          TIMESTAMPTZ,
     modified_by          INTEGER REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS ul_sp (
-    id                          SERIAL PRIMARY KEY,
-    product_id                  INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-    ul_product_per_layer        INTEGER,
-    ul_pallet_layers            INTEGER,
-    ul_layers_interlocked       BOOLEAN,
-    ul_pack_orientation         VARCHAR(50),
-    ul_direction_base_layer     VARCHAR(50),
-    ul_miwo_feet                INTEGER,
-    ul_miwo_dim                 VARCHAR(50),
-    ul_pallet_dim               VARCHAR(50),
-    ul_pallet_dim_perpendicular VARCHAR(50),
-    ul_pallet_height            NUMERIC(10,3),
-    ul_cross_turning            BOOLEAN,
-    ul_use_hooding              BOOLEAN,
-    ul_use_glue                 BOOLEAN,
-    ul_use_wrapping             BOOLEAN,
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    modified_at                 TIMESTAMPTZ,
-    modified_by                 INTEGER REFERENCES users(id)
 );
 
 -- ── Shift schedule (references shifts + users) ────────────────────────────────
@@ -192,6 +139,7 @@ CREATE TABLE IF NOT EXISTS shift_schedule (
     id                  INTEGER     PRIMARY KEY DEFAULT 1,
     pattern             VARCHAR(50) NOT NULL DEFAULT '2on2off2night2off',
     start_time          TIME        NOT NULL DEFAULT '08:00:00',
+    timezone            TEXT        NOT NULL DEFAULT 'UTC',
     reference_date      DATE,
     reference_shift_id  INTEGER     REFERENCES shifts(id),
     updated_at          TIMESTAMPTZ,
@@ -231,6 +179,7 @@ CREATE TABLE IF NOT EXISTS orders (
     good_quantity       DECIMAL(12, 3),
     shift_id            INTEGER REFERENCES shifts(id),
     created_by_id       INTEGER REFERENCES users(id),
+    tx                  INTEGER        NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ  DEFAULT NOW(),
     updated_at          TIMESTAMPTZ  DEFAULT NOW()
 );
@@ -241,6 +190,7 @@ CREATE TABLE IF NOT EXISTS cages (
     cage_guid        UUID         NOT NULL DEFAULT gen_random_uuid(),
     cage_size        INTEGER      NOT NULL DEFAULT 50,
     packages         INTEGER      NOT NULL,
+    shift_id         INTEGER REFERENCES shifts(id),
     completed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     completed_by_id  INTEGER REFERENCES users(id)
 );
@@ -252,6 +202,43 @@ CREATE TABLE IF NOT EXISTS order_shift_productions (
     date        DATE           NOT NULL DEFAULT CURRENT_DATE,
     produced    NUMERIC(12,3)  NOT NULL DEFAULT 0,
     UNIQUE (order_id, shift_id, date)
+);
+
+-- ── Product attribute catalog ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS binder_types (
+    id       INTEGER PRIMARY KEY,
+    name     TEXT NOT NULL,
+    name_eng TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pkf_groups (
+    id       INTEGER PRIMARY KEY,
+    name     TEXT NOT NULL,
+    name_eng TEXT NOT NULL
+);
+
+-- Per-product attribute definitions with default values
+-- value_type: 'text' | 'integer' | 'numeric' | 'binder_type' | 'pkf_group'
+-- For FK types (binder_type, pkf_group) default_value stores the FK id as text
+CREATE TABLE IF NOT EXISTS product_attributes (
+    id            SERIAL PRIMARY KEY,
+    product_id    INTEGER NOT NULL REFERENCES products(id),
+    name          TEXT,                   -- display label in Russian
+    name_eng      TEXT,                   -- display label in English
+    value_type    TEXT NOT NULL DEFAULT 'text',
+    default_value TEXT,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (product_id, name_eng)
+);
+
+-- Per-order attribute overrides (COALESCE with product default on read)
+CREATE TABLE IF NOT EXISTS order_attributes (
+    id           SERIAL PRIMARY KEY,
+    order_id     INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    attribute_id INTEGER NOT NULL REFERENCES product_attributes(id),
+    value        TEXT NOT NULL,
+    UNIQUE (order_id, attribute_id)
 );
 
 -- ── Logging & telemetry ───────────────────────────────────────────────────────
@@ -275,6 +262,18 @@ CREATE TABLE IF NOT EXISTS machine_states (
     ts                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS machine_states_line_ts_idx ON machine_states(production_line_id, ts DESC);
+
+-- Retain only the last 30 days of machine state data (cleanup on every insert)
+CREATE OR REPLACE FUNCTION fn_machine_states_retention() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM machine_states WHERE ts < NOW() - INTERVAL '30 days';
+    RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_machine_states_retention ON machine_states;
+CREATE TRIGGER trg_machine_states_retention
+    AFTER INSERT ON machine_states
+    FOR EACH STATEMENT EXECUTE FUNCTION fn_machine_states_retention();
 
 CREATE TABLE IF NOT EXISTS production_events (
     id               SERIAL PRIMARY KEY,

@@ -35,7 +35,7 @@ fi
 
 if [ "$LINE" -eq "$WIRED_MATTS_LINE_ID" ]; then
   CAGE_SQL="true"
-  UOM_SQL="(SELECT id FROM uom WHERE code = 'pkg')"
+  UOM_SQL="(SELECT id FROM uom WHERE code = 'pcs')"
   CAGE_SIZE_SQL="COALESCE(p.pcs_in_pack, 50)"
 else
   CAGE_SQL="false"
