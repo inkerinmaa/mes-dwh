@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Import a production-plan CSV (";"-delimited) into the orders table.
 #
-# Expected CSV headers (only these columns are used):
-#   PlannedOrder              -> orders.order_number
-#   Material                  -> orders.product_id  (resolved via products.number = Material)
-#   PlannedOrderStartTime     -> orders.planned_start_at
-#   PlannedOrderFinishTime    -> orders.planned_complete_at
-#   TotalPlannedOrderQuantity -> orders.volume
+# Expected CSV headers (matched case-insensitively, only these columns are used):
+#   PlannedOrder / planned_order                        -> orders.order_number
+#   Material                                            -> orders.product_id
+#   PlannedOrderStartTime / planned_order_start_time    -> orders.planned_start_at
+#   PlannedOrderFinishTime / planned_order_finish_time  -> orders.planned_complete_at
+#   TotalPlannedOrderQuantity / total_planned_order_qty -> orders.volume
 #
 # UOM is derived directly from the product's uom_id FK.
 #
@@ -33,15 +33,16 @@ trap 'rm -f "$SQL_FILE"' EXIT
 
 awk -F';' -v line="$LINE" '
   NR == 1 {
-    for (i = 1; i <= NF; i++) col[$i] = i
+    for (i = 1; i <= NF; i++) { h = $i; gsub(/[\r\n \t]/, "", h); col[tolower(h)] = i }
     next
   }
   {
-    order_number = $(col["PlannedOrder"])
-    material     = $(col["Material"])
-    start_time   = $(col["PlannedOrderStartTime"])
-    finish_time  = $(col["PlannedOrderFinishTime"])
-    volume       = $(col["TotalPlannedOrderQuantity"])
+    order_number = $(col["plannedorder"]);     gsub(/\r/, "", order_number); gsub(/^[ \t]+|[ \t]+$/, "", order_number)
+    material     = $(col["material"]);         gsub(/\r/, "", material);     gsub(/^[ \t]+|[ \t]+$/, "", material)
+    start_time   = $(col["plannedorderstarttime"]); gsub(/\r/, "", start_time)
+    finish_time  = $(col["plannedorderfinishtime"]); gsub(/\r/, "", finish_time)
+    qty_col      = ("totalplannedorderquantity" in col) ? col["totalplannedorderquantity"] : col["total_planned_order_qty"]
+    volume       = (qty_col > 0) ? $qty_col : ""; gsub(/\r/, "", volume); gsub(/,/, ".", volume)
 
     if (order_number == "" || material == "" || volume == "") next
 

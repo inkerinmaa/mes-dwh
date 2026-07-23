@@ -25,7 +25,7 @@
 #   layers              → layers
 #   normwaste           → norm_waste
 #   grindingwasteow     → grinding_waste_ow
-#   packaging           → uom
+#   packaging           → uom_id  (resolved via SELECT id FROM uom WHERE code = packaging)
 #   storelocation       → category
 #   directrclmode       → direct_recycle_mode
 #   remark              → comment
