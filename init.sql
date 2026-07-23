@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS products (
     package_code         VARCHAR(50),
     sequence             INTEGER,
     production_instruction TEXT,
-    uom                  VARCHAR(50)    DEFAULT 'pcs', -- packaging unit (pcs / pack / pal)
+    uom_id               INTEGER        REFERENCES uom(id),
     cut_direction        TEXT,
     pcs_in_pack          INTEGER,
     packs_in_package     INTEGER,
@@ -171,8 +171,6 @@ CREATE TABLE IF NOT EXISTS orders (
     complete_at         TIMESTAMPTZ,
     seq_order           INTEGER,
     comment             TEXT,
-    cage                BOOLEAN      NOT NULL DEFAULT false,
-    cage_size           INTEGER      NOT NULL DEFAULT 50,
     produced_volume     DECIMAL(12, 3) NOT NULL DEFAULT 0,
     pkg_produced        INTEGER        NOT NULL DEFAULT 0,
     waste_quantity      DECIMAL(12, 3),
@@ -184,16 +182,17 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at          TIMESTAMPTZ  DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS cages (
-    id               SERIAL PRIMARY KEY,
-    order_number     VARCHAR(100) NOT NULL REFERENCES orders(order_number) ON DELETE CASCADE,
-    cage_guid        UUID         NOT NULL DEFAULT gen_random_uuid(),
-    cage_size        INTEGER      NOT NULL DEFAULT 50,
-    packages         INTEGER      NOT NULL,
-    shift_id         INTEGER REFERENCES shifts(id),
-    completed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    completed_by_id  INTEGER REFERENCES users(id)
+CREATE TABLE IF NOT EXISTS order_production_entries (
+    id              SERIAL PRIMARY KEY,
+    order_id        INTEGER       NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    quantity        NUMERIC(12,3) NOT NULL CHECK (quantity > 0),
+    shift_id        INTEGER REFERENCES shifts(id),
+    production_date DATE,
+    entered_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    entered_by_id   INTEGER REFERENCES users(id)
 );
+
+CREATE INDEX IF NOT EXISTS ope_order_idx ON order_production_entries(order_id);
 
 CREATE TABLE IF NOT EXISTS order_shift_productions (
     id          SERIAL PRIMARY KEY,
@@ -315,3 +314,102 @@ CREATE TABLE IF NOT EXISTS settings (
     changed_by_id  INTEGER REFERENCES users(id),
     changed_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- ── Production entries (manual quantity additions per order) ─────────────────
+CREATE TABLE IF NOT EXISTS order_production_entries (
+    id              SERIAL PRIMARY KEY,
+    order_id        INTEGER      NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    quantity        NUMERIC(12,3) NOT NULL CHECK (quantity > 0),
+    shift_id        INTEGER      REFERENCES shifts(id),
+    production_date DATE,
+    entered_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    entered_by_id   INTEGER      REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS ope_order_idx ON order_production_entries(order_id);
+
+-- ── Reporting schema ──────────────────────────────────────────────────────────
+-- External services connect to this schema with the mes_reports_ro role.
+-- They get SELECT-only access; the public schema is not visible to them.
+
+CREATE SCHEMA IF NOT EXISTS mes_reports;
+
+-- Role for external read-only access (separate service / ERP adapter).
+-- Password intentionally weak here — change in production.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mes_reports_ro') THEN
+        CREATE ROLE mes_reports_ro LOGIN PASSWORD 'F51MBO02g25Os4WLmkc4Z8J3' NOINHERIT;
+    END IF;
+END $$;
+
+GRANT CONNECT ON DATABASE mes TO mes_reports_ro;
+GRANT USAGE ON SCHEMA mes_reports TO mes_reports_ro;
+
+-- ── View: mes_reports.orders ──────────────────────────────────────────────────
+-- One row per order. All production KPIs flat, ready to consume.
+
+CREATE OR REPLACE VIEW mes_reports.orders AS
+SELECT
+    o.order_number,
+    o.status,
+    pl.id                                               AS line_id,
+    pl.name                                             AS line_name,
+    p.number                                            AS product_number,
+    p.name                                              AS product_name,
+    p.name_eng                                          AS product_name_eng,
+    p.cover_code                                        AS product_cover_code,
+    p.package_code                                      AS product_package_code,
+    p.length                                            AS product_length,
+    p.width                                             AS product_width,
+    p.thickness                                         AS product_thickness,
+    p.density                                           AS product_density,
+    o.priority,
+    o.volume                                            AS planned_volume,
+    u.code                                              AS uom_code,
+    u.name                                              AS uom_name,
+    o.planned_start_at,
+    o.planned_complete_at,
+    o.start_at,
+    o.complete_at,
+    ROUND(
+        EXTRACT(EPOCH FROM (COALESCE(o.complete_at, NOW()) - o.start_at)) / 3600.0
+    , 2)                                                AS duration_hours,
+    COALESCE(o.produced_volume, 0)                      AS produced_volume,
+    COALESCE(
+        (SELECT SUM(e.quantity) FROM order_production_entries e WHERE e.order_id = o.id), 0
+    )                                                   AS manual_entries_total,
+    COALESCE(o.pkg_produced, 0)                         AS pkg_produced,
+    COALESCE(o.waste_quantity, 0)                       AS waste_quantity,
+    COALESCE(o.good_quantity, 0)                        AS good_quantity,
+    CASE
+        WHEN o.volume > 0 AND o.produced_volume IS NOT NULL
+        THEN ROUND((o.produced_volume / o.volume * 100)::numeric, 1)
+    END                                                 AS progress_pct,
+    o.comment,
+    o.created_at
+FROM orders o
+LEFT JOIN production_lines pl ON pl.id = o.production_line_id
+LEFT JOIN products          p  ON p.id  = o.product_id
+LEFT JOIN uom               u  ON u.id  = o.uom_id;
+
+-- ── View: mes_reports.order_shift_productions ─────────────────────────────────
+-- Per-shift production breakdown. Join to mes_reports.orders on order_number.
+
+CREATE OR REPLACE VIEW mes_reports.order_shift_productions AS
+SELECT
+    o.order_number,
+    s.code      AS shift_code,
+    s.name      AS shift_name,
+    s.color     AS shift_color,
+    osp.date,
+    osp.produced,
+    u.code      AS uom_code
+FROM order_shift_productions osp
+JOIN orders  o ON o.id  = osp.order_id
+JOIN shifts  s ON s.id  = osp.shift_id
+JOIN uom     u ON u.id  = o.uom_id;
+
+-- Grant SELECT on current and future views in mes_reports to the RO role
+GRANT SELECT ON ALL TABLES IN SCHEMA mes_reports TO mes_reports_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA mes_reports
+    GRANT SELECT ON TABLES TO mes_reports_ro;

@@ -197,25 +197,34 @@ ON CONFLICT (id) DO NOTHING;
 -- ── Products ──────────────────────────────────────────────────────────────────
 
 INSERT INTO products (number, group_id, name, name_eng, cover_code, package_code,
-                      uom, pcs_in_pack, packs_in_package,
+                      uom_id, pcs_in_pack, packs_in_package,
                       length, width, thickness, density, layers,
                       norm_waste, edge_trim_width)
-VALUES
+SELECT
+    p.number, p.group_id, p.name, p.name_eng, p.cover_code, p.package_code,
+    (SELECT id FROM uom WHERE code = p.uom_code),
+    p.pcs_in_pack, p.packs_in_package,
+    p.length, p.width, p.thickness, p.density, p.layers,
+    p.norm_waste, p.edge_trim_width
+FROM (VALUES
     ('WM-105', 1, 'ВАЙРЕД МАТ 105', 'Wired Mat 105',
-     'WM-105', 'PAK-SL-105', 'packages', 1, 7,
-     1000, 7000, 25, 105, 1, 3.0, 5.0),
+     'WM-105', 'PAK-SL-105', 'pcs', 1, 7,
+     1000.0, 7000.0, 25.0, 105.0, 1, 3.0, 5.0),
     ('WM-100', 1, 'ВАЙРЕД МАТ 100', 'Wired Mat 100',
-     'WM-100', 'PAK-SL-100', 'packages', 1, 7,
-     1000, 7000, 25, 100, 1, 3.0, 5.0),
+     'WM-100', 'PAK-SL-100', 'pcs', 1, 7,
+     1000.0, 7000.0, 25.0, 100.0, 1, 3.0, 5.0),
     ('SL-50',  2, 'ПЛИТА 50',       'Slab 50mm',
-     'SL-050', 'PAK-SL-050', 'packages', 4, 8,
-     1200, 600, 50, 80, 2, 2.5, 4.0)
+     'SL-050', 'PAK-SL-050', 'pcs', 4, 8,
+     1200.0, 600.0, 50.0, 80.0, 2, 2.5, 4.0)
+) AS p(number, group_id, name, name_eng, cover_code, package_code, uom_code,
+       pcs_in_pack, packs_in_package, length, width, thickness, density, layers,
+       norm_waste, edge_trim_width)
 ON CONFLICT (number) DO UPDATE SET
     name              = EXCLUDED.name,
     name_eng          = EXCLUDED.name_eng,
     cover_code        = EXCLUDED.cover_code,
     package_code      = EXCLUDED.package_code,
-    uom               = EXCLUDED.uom,
+    uom_id            = EXCLUDED.uom_id,
     pcs_in_pack       = EXCLUDED.pcs_in_pack,
     packs_in_package  = EXCLUDED.packs_in_package,
     length            = EXCLUDED.length,

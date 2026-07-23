@@ -12,7 +12,8 @@
 
 | Service | URL / Host | Credentials |
 |---------|-----------|-------------|
-| PostgreSQL | `localhost:5432` db `mes` | `mesrwl` / `HzG03x45efVB3jAwg3kSOI88KdA9QNAa` |
+| PostgreSQL (app) | `localhost:5432` db `mes` | `mesrwl` / `HzG03x45efVB3jAwg3kSOI88KdA9QNAa` |
+| PostgreSQL (reports RO) | `localhost:5432` db `mes`, schema `mes_reports` | `mes_reports_ro` / `F51MBO02g25Os4WLmkc4Z8J3` |
 | ClickHouse HTTP | `localhost:8123` db `historian` | `nik` / `mysecretpassword` |
 | ClickHouse TCP | `localhost:9000` | `nik` / `mysecretpassword` |
 | NATS | `nats://localhost:4222` | anonymous |
@@ -215,6 +216,87 @@ Column mapping (by CSV header name, order-independent):
 | `total_planned_order_qty` | `volume` |
 
 All rows in a run go to the same `production_line_id = $LINE`. When `$LINE` is Wired Matts (id 4, the default), `cage=true` and `uom_id` is set to `pkg` automatically — matching the New Order form's behavior — with `cage_size = products.pcs_in_pack` (falls back to 50 if unset). For any other line, `cage=false` and `uom_id`/`cage_size` take their schema defaults. `status='created'`, `priority='Medium'` always. Rows whose `material` doesn't match any `products.number` are silently skipped. Idempotent on `order_number` (`ON CONFLICT DO NOTHING`) — safe to re-run on a partially-imported file.
+
+## Reporting schema (`mes_reports`)
+
+A dedicated PostgreSQL schema exposes clean read-only views for external services (ERP adapters, reporting tools, data exports). External apps connect as `mes_reports_ro` — they see only `mes_reports.*` and cannot touch the `public` schema.
+
+### Role
+
+| Role | Password (dev) | Privileges |
+|------|---------------|------------|
+| `mes_reports_ro` | `F51MBO02g25Os4WLmkc4Z8J3` | `CONNECT` on `mes` DB, `USAGE` on `mes_reports` schema, `SELECT` on all views |
+
+Connection string for an external service:
+```
+Host=localhost;Port=5432;Database=mes;Username=mes_reports_ro;Password=F51MBO02g25Os4WLmkc4Z8J3;Search Path=mes_reports
+```
+
+### Views
+
+#### `mes_reports.orders` — one row per order, all KPIs flat
+
+| Column | Source | Notes |
+|--------|--------|-------|
+| `order_number` | `orders.order_number` | Natural key |
+| `status` | `orders.status` | created / running / paused / completed / cancelled |
+| `line_id`, `line_name` | `production_lines` | Production line |
+| `product_number`, `product_name`, `product_name_eng` | `products` | Product identity |
+| `product_cover_code`, `product_package_code` | `products` | — |
+| `product_length/width/thickness/density` | `products` | Physical dimensions |
+| `priority` | `orders.priority` | Low / Medium / High / Critical |
+| `planned_volume`, `uom_code`, `uom_name` | `orders` + `uom` | Plan quantity |
+| `cage`, `cage_size` | `orders` | Cage tracking config |
+| `planned_start_at`, `planned_complete_at` | `orders` | Plan dates |
+| `start_at`, `complete_at` | `orders` | Actual dates |
+| `duration_hours` | computed | `EXTRACT(EPOCH FROM complete_at - start_at) / 3600`, rounded to 2 dp; uses `NOW()` for running orders |
+| `produced_volume` | `orders.produced_volume` | COALESCE 0 |
+| `produced_packages` | `SUM(cages.packages)` | Correlated subquery |
+| `pkg_produced` | `orders.pkg_produced` | COALESCE 0 |
+| `waste_quantity`, `good_quantity` | `orders` | COALESCE 0 |
+| `progress_pct` | computed | `produced_volume / planned_volume * 100`, 1 dp; NULL when volume = 0 |
+| `comment` | `orders.comment` | Operator note |
+| `created_at` | `orders.created_at` | — |
+
+#### `mes_reports.order_shift_productions` — per-shift production breakdown
+
+| Column | Notes |
+|--------|-------|
+| `order_number` | Join key to `mes_reports.orders` |
+| `shift_code` | A / B / C / D |
+| `shift_name`, `shift_color` | Display fields |
+| `date` | Calendar date of the shift |
+| `produced` | Packages/volume produced in this shift on this date |
+| `uom_code` | Inherited from the order |
+
+### Typical queries
+
+```sql
+-- All running orders with produced amounts
+SELECT order_number, line_name, product_name,
+       planned_volume, produced_volume, progress_pct, uom_code
+FROM mes_reports.orders
+WHERE status = 'running';
+
+-- Shift breakdown for a specific order
+SELECT shift_code, shift_name, date, produced
+FROM mes_reports.order_shift_productions
+WHERE order_number = '1260007201'
+ORDER BY date, shift_code;
+
+-- Completed orders in a date range
+SELECT order_number, product_name, start_at, complete_at,
+       planned_volume, produced_volume, waste_quantity, duration_hours
+FROM mes_reports.orders
+WHERE status = 'completed'
+  AND complete_at BETWEEN '2026-07-01' AND '2026-07-31';
+```
+
+### Adding new views
+
+1. Add `CREATE OR REPLACE VIEW mes_reports.<name> AS ...` to both `init.sql` and `migrate.sql`
+2. Add `GRANT SELECT ON ALL TABLES IN SCHEMA mes_reports TO mes_reports_ro;` after the view
+3. Apply: `docker exec -i postgres-db psql -U mesrwl -d mes < ~/projects/mes-dwh/migrate.sql`
 
 ## Rules
 - `init.sql` is DDL only — no data, no `INSERT` statements

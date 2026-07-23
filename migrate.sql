@@ -380,3 +380,166 @@ ON CONFLICT (id) DO NOTHING;
 
 -- ── 17. Drop orphaned store_location column ───────────────────────────────────
 ALTER TABLE products DROP COLUMN IF EXISTS store_location;
+
+-- ── 18. mes_reports schema ────────────────────────────────────────────────────
+
+CREATE SCHEMA IF NOT EXISTS mes_reports;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'mes_reports_ro') THEN
+        CREATE ROLE mes_reports_ro LOGIN PASSWORD 'F51MBO02g25Os4WLmkc4Z8J3' NOINHERIT;
+    END IF;
+END $$;
+
+GRANT CONNECT ON DATABASE mes TO mes_reports_ro;
+GRANT USAGE ON SCHEMA mes_reports TO mes_reports_ro;
+
+CREATE OR REPLACE VIEW mes_reports.orders AS
+SELECT
+    o.order_number,
+    o.status,
+    pl.id                                               AS line_id,
+    pl.name                                             AS line_name,
+    p.number                                            AS product_number,
+    p.name                                              AS product_name,
+    p.name_eng                                          AS product_name_eng,
+    p.cover_code                                        AS product_cover_code,
+    p.package_code                                      AS product_package_code,
+    p.length                                            AS product_length,
+    p.width                                             AS product_width,
+    p.thickness                                         AS product_thickness,
+    p.density                                           AS product_density,
+    o.priority,
+    o.volume                                            AS planned_volume,
+    u.code                                              AS uom_code,
+    u.name                                              AS uom_name,
+    o.cage,
+    o.cage_size,
+    o.planned_start_at,
+    o.planned_complete_at,
+    o.start_at,
+    o.complete_at,
+    ROUND(
+        EXTRACT(EPOCH FROM (COALESCE(o.complete_at, NOW()) - o.start_at)) / 3600.0
+    , 2)                                                AS duration_hours,
+    COALESCE(o.produced_volume, 0)                      AS produced_volume,
+    COALESCE(
+        (SELECT SUM(c.packages) FROM cages c WHERE c.order_number = o.order_number), 0
+    )                                                   AS produced_packages,
+    COALESCE(o.pkg_produced, 0)                         AS pkg_produced,
+    COALESCE(o.waste_quantity, 0)                       AS waste_quantity,
+    COALESCE(o.good_quantity, 0)                        AS good_quantity,
+    CASE
+        WHEN o.volume > 0 AND o.produced_volume IS NOT NULL
+        THEN ROUND((o.produced_volume / o.volume * 100)::numeric, 1)
+    END                                                 AS progress_pct,
+    o.comment,
+    o.created_at
+FROM orders o
+LEFT JOIN production_lines pl ON pl.id = o.production_line_id
+LEFT JOIN products          p  ON p.id  = o.product_id
+LEFT JOIN uom               u  ON u.id  = o.uom_id;
+
+CREATE OR REPLACE VIEW mes_reports.order_shift_productions AS
+SELECT
+    o.order_number,
+    s.code      AS shift_code,
+    s.name      AS shift_name,
+    s.color     AS shift_color,
+    osp.date,
+    osp.produced,
+    u.code      AS uom_code
+FROM order_shift_productions osp
+JOIN orders  o ON o.id  = osp.order_id
+JOIN shifts  s ON s.id  = osp.shift_id
+JOIN uom     u ON u.id  = o.uom_id;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA mes_reports TO mes_reports_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA mes_reports
+    GRANT SELECT ON TABLES TO mes_reports_ro;
+
+-- ── 19. Remove cage concept, add order_production_entries ─────────────────────
+
+-- Drop reporting view first (depends on cage columns and cages table)
+DROP VIEW IF EXISTS mes_reports.orders;
+
+-- Drop cage columns from orders
+ALTER TABLE orders DROP COLUMN IF EXISTS cage;
+ALTER TABLE orders DROP COLUMN IF EXISTS cage_size;
+
+-- Drop cages table
+DROP TABLE IF EXISTS cages;
+
+-- Manual production entries (replaces cage tracking)
+CREATE TABLE IF NOT EXISTS order_production_entries (
+    id              SERIAL PRIMARY KEY,
+    order_id        INTEGER      NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    quantity        NUMERIC(12,3) NOT NULL CHECK (quantity > 0),
+    shift_id        INTEGER      REFERENCES shifts(id),
+    production_date DATE,
+    entered_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    entered_by_id   INTEGER      REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS ope_order_idx ON order_production_entries(order_id);
+
+-- Recreate mes_reports.orders without cage columns (now uses order_production_entries)
+CREATE OR REPLACE VIEW mes_reports.orders AS
+SELECT
+    o.order_number,
+    o.status,
+    pl.id                                               AS line_id,
+    pl.name                                             AS line_name,
+    p.number                                            AS product_number,
+    p.name                                              AS product_name,
+    p.name_eng                                          AS product_name_eng,
+    p.cover_code                                        AS product_cover_code,
+    p.package_code                                      AS product_package_code,
+    p.length                                            AS product_length,
+    p.width                                             AS product_width,
+    p.thickness                                         AS product_thickness,
+    p.density                                           AS product_density,
+    o.priority,
+    o.volume                                            AS planned_volume,
+    u.code                                              AS uom_code,
+    u.name                                              AS uom_name,
+    o.planned_start_at,
+    o.planned_complete_at,
+    o.start_at,
+    o.complete_at,
+    ROUND(
+        EXTRACT(EPOCH FROM (COALESCE(o.complete_at, NOW()) - o.start_at)) / 3600.0
+    , 2)                                                AS duration_hours,
+    COALESCE(o.produced_volume, 0)                      AS produced_volume,
+    COALESCE(
+        (SELECT SUM(e.quantity) FROM order_production_entries e WHERE e.order_id = o.id), 0
+    )                                                   AS manual_entries_total,
+    COALESCE(o.pkg_produced, 0)                         AS pkg_produced,
+    COALESCE(o.waste_quantity, 0)                       AS waste_quantity,
+    COALESCE(o.good_quantity, 0)                        AS good_quantity,
+    CASE
+        WHEN o.volume > 0 AND o.produced_volume IS NOT NULL
+        THEN ROUND((o.produced_volume / o.volume * 100)::numeric, 1)
+    END                                                 AS progress_pct,
+    o.comment,
+    o.created_at
+FROM orders o
+LEFT JOIN production_lines pl ON pl.id = o.production_line_id
+LEFT JOIN products          p  ON p.id  = o.product_id
+LEFT JOIN uom               u  ON u.id  = o.uom_id;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA mes_reports TO mes_reports_ro;
+
+-- ── 20. products.uom VARCHAR → products.uom_id FK ─────────────────────────────
+-- Map 'packages' → pcs (they are the same physical unit; 'packages' was a
+-- workaround before the uom table existed).
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS uom_id INTEGER REFERENCES uom(id);
+
+UPDATE products p
+SET uom_id = u.id
+FROM uom u
+WHERE u.code = CASE p.uom WHEN 'packages' THEN 'pcs' ELSE p.uom END
+  AND p.uom_id IS NULL;
+
+ALTER TABLE products DROP COLUMN IF EXISTS uom;
