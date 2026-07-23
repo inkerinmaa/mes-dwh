@@ -424,3 +424,14 @@ INSERT INTO product_attributes (product_id, name, name_eng, value_type, default_
     (4, 'Норматив GW1, кг/ч',      'Budget GW1 kg/h',         'numeric',     '6700', 5),
     (4, 'Группа ПКФ',              'PKF Group',               'pkf_group',   '1',   6)
 ON CONFLICT (product_id, name_eng) DO NOTHING;
+
+-- ── Event types ───────────────────────────────────────────────────────────────
+INSERT INTO event_types (name, name_eng) VALUES
+    ('downtime_unplanned', 'Unplanned Downtime'),
+    ('downtime_planned',   'Planned Downtime'),
+    ('changeover',         'Changeover'),
+    ('quality_hold',       'Quality Hold'),
+    ('maintenance',        'Maintenance'),
+    ('operator_note',      'Operator Note'),
+    ('safety',             'Safety')
+ON CONFLICT (name) DO NOTHING;

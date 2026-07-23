@@ -40,8 +40,9 @@ CREATE TABLE IF NOT EXISTS production_lines (
     name                  VARCHAR(100) NOT NULL,
     description           TEXT,
     status                VARCHAR(50)  DEFAULT 'active',
-    order_control_enabled BOOLEAN      NOT NULL DEFAULT TRUE,
-    manual_waste_enabled  BOOLEAN      NOT NULL DEFAULT TRUE
+    order_control_enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+    manual_waste_enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    produced_correction_enabled  BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 CREATE TABLE IF NOT EXISTS materials (
@@ -274,14 +275,18 @@ CREATE TRIGGER trg_machine_states_retention
     AFTER INSERT ON machine_states
     FOR EACH STATEMENT EXECUTE FUNCTION fn_machine_states_retention();
 
+CREATE TABLE IF NOT EXISTS event_types (
+    id        SERIAL PRIMARY KEY,
+    name      VARCHAR(50)  UNIQUE NOT NULL,
+    name_eng  VARCHAR(100) NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS production_events (
     id               SERIAL PRIMARY KEY,
     line_id          INTEGER NOT NULL REFERENCES production_lines(id),
     order_id         INTEGER REFERENCES orders(id),
     machine_state_id INTEGER REFERENCES machine_states(id),
-    event_type       VARCHAR(50) NOT NULL
-                     CHECK (event_type IN ('downtime_unplanned','downtime_planned','changeover',
-                                           'quality_hold','maintenance','operator_note','safety')),
+    event_type       VARCHAR(50) NOT NULL,
     severity         VARCHAR(20) NOT NULL DEFAULT 'info'
                      CHECK (severity IN ('info','warning','critical')),
     title            VARCHAR(200) NOT NULL,

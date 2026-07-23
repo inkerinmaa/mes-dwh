@@ -114,7 +114,7 @@ function iget(name,    v, idx) {
 
     base_cols = "number, group_id, cover_code, package_code, sequence, production_instruction," \
                 " name_eng, length, width, thickness, density, pcs_in_pack, packs_in_package," \
-                " cut_direction, layers, norm_waste, grinding_waste_ow, uom, category," \
+                " cut_direction, layers, norm_waste, grinding_waste_ow, uom_id, category," \
                 " direct_recycle_mode, comment," \
                 " info_1, info_2, info_3, info_4, info_5, info_6," \
                 " product_line_width, edge_trim_width, wet_edge_trim_width, wet_edge_trim_mode," \
@@ -127,7 +127,7 @@ function iget(name,    v, idx) {
                 num("length") "," num("width") "," num("thickness") "," num("density") "," \
                 iget("pcspercolli") "," iget("collisperunit") "," \
                 str("lengthdirection") "," iget("layers") "," num("normwaste") "," num("grindingwasteow") "," \
-                str("packaging") "," str("storelocation") "," \
+                "(SELECT id FROM uom WHERE code = " str("packaging") ")," str("storelocation") "," \
                 iget("directrclmode") "," str("remark") "," \
                 str("info1") "," str("info2") "," str("info3") "," str("info4") "," str("info5") "," str("info6") "," \
                 num("productionlinewidth") "," num("edgetrimwidth") "," num("wetedgetrimwidth") "," num("wetedgetrimmode") "," \
@@ -160,7 +160,7 @@ function iget(name,    v, idx) {
     print "    layers                = EXCLUDED.layers,"
     print "    norm_waste            = EXCLUDED.norm_waste,"
     print "    grinding_waste_ow     = EXCLUDED.grinding_waste_ow,"
-    print "    uom                   = EXCLUDED.uom,"
+    print "    uom_id                = EXCLUDED.uom_id,"
     print "    category              = EXCLUDED.category,"
     print "    direct_recycle_mode   = EXCLUDED.direct_recycle_mode,"
     print "    comment               = EXCLUDED.comment,"

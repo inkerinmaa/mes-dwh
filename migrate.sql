@@ -543,3 +543,29 @@ WHERE u.code = CASE p.uom WHEN 'packages' THEN 'pcs' ELSE p.uom END
   AND p.uom_id IS NULL;
 
 ALTER TABLE products DROP COLUMN IF EXISTS uom;
+
+-- ── 21. Add produced_correction_enabled to production_lines ──────────────────
+
+ALTER TABLE production_lines
+  ADD COLUMN IF NOT EXISTS produced_correction_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- ── 22. Add event_types table; drop hardcoded CHECK on production_events ──────
+
+CREATE TABLE IF NOT EXISTS event_types (
+    id        SERIAL PRIMARY KEY,
+    name      VARCHAR(50)  UNIQUE NOT NULL,
+    name_eng  VARCHAR(100) NOT NULL
+);
+
+INSERT INTO event_types (name, name_eng) VALUES
+    ('downtime_unplanned', 'Unplanned Downtime'),
+    ('downtime_planned',   'Planned Downtime'),
+    ('changeover',         'Changeover'),
+    ('quality_hold',       'Quality Hold'),
+    ('maintenance',        'Maintenance'),
+    ('operator_note',      'Operator Note'),
+    ('safety',             'Safety')
+ON CONFLICT (name) DO NOTHING;
+
+ALTER TABLE production_events
+    DROP CONSTRAINT IF EXISTS production_events_event_type_check;
