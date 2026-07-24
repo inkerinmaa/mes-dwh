@@ -25,7 +25,7 @@
 #   layers              → layers
 #   normwaste           → norm_waste
 #   grindingwasteow     → grinding_waste_ow
-#   packaging           → uom_id  (resolved via SELECT id FROM uom WHERE code = packaging)
+#   packaging           → uom_id  (PAL→1, ST→1, PAK→2, else NULL)
 #   storelocation       → category
 #   directrclmode       → direct_recycle_mode
 #   remark              → comment
@@ -103,6 +103,18 @@ function iget(name,    v, idx) {
     return v + 0
 }
 
+# Map packaging column code → uom_id (PAL/ST→1, PAK→2, else NULL)
+function uom_id_from_packaging(    v, idx) {
+    if (!("packaging" in col)) return "NULL"
+    idx = col["packaging"]
+    v = $idx
+    gsub(/\r/, "", v)
+    gsub(/^[ \t]+|[ \t]+$/, "", v)
+    if (v == "PAL" || v == "ST") return "1"
+    if (v == "PAK") return "2"
+    return "NULL"
+}
+
 {
     number = ("materialnumber" in col) ? $(col["materialnumber"]) : ""
     gsub(/\r/, "", number)
@@ -127,7 +139,7 @@ function iget(name,    v, idx) {
                 num("length") "," num("width") "," num("thickness") "," num("density") "," \
                 iget("pcspercolli") "," iget("collisperunit") "," \
                 str("lengthdirection") "," iget("layers") "," num("normwaste") "," num("grindingwasteow") "," \
-                "(SELECT id FROM uom WHERE code = " str("packaging") ")," str("storelocation") "," \
+                uom_id_from_packaging() "," str("storelocation") "," \
                 iget("directrclmode") "," str("remark") "," \
                 str("info1") "," str("info2") "," str("info3") "," str("info4") "," str("info5") "," str("info6") "," \
                 num("productionlinewidth") "," num("edgetrimwidth") "," num("wetedgetrimwidth") "," num("wetedgetrimmode") "," \
